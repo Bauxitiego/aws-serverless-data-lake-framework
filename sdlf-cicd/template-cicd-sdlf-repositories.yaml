@@ -9,6 +9,9 @@ Parameters:
   pCicdRepository:
     Type: String
     Default: sdlf-cicd
+  pCatalogRepository:
+    Type: String
+    Default: sdlf-catalog
   pFoundationsRepository:
     Type: String
     Default: sdlf-foundations
@@ -62,6 +65,21 @@ Resources:
         S3: ../sdlf-cicd
       RepositoryDescription: sdlf-cicd repository
       RepositoryName: !Ref pCicdRepository
+      KmsKeyId: !Ref pKMSKey
+
+  rCatalogCodeCommit:
+    Type: AWS::CodeCommit::Repository
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3002
+    Properties:
+      Code:
+        BranchName: main
+        S3: ../sdlf-catalog
+      RepositoryDescription: sdlf-catalog repository
+      RepositoryName: !Ref pCatalogRepository
       KmsKeyId: !Ref pKMSKey
 
   rFoundationsCodeCommit:
@@ -207,6 +225,14 @@ Resources:
       Type: String
       Value: !GetAtt rCicdCodeCommit.Name
       Description: Name of the Cicd repository
+
+  rCatalogCodeCommitSsm:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /SDLF/CodeCommit/CatalogCodeCommit
+      Type: String
+      Value: !GetAtt rCatalogCodeCommit.Name
+      Description: Name of the Catalog repository
 
   rFoundationsCodeCommitSsm:
     Type: AWS::SSM::Parameter

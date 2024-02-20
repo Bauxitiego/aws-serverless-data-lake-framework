@@ -13,6 +13,12 @@ Parameters:
     Description: Data domain name
     Type: String
     Default: "{{resolve:ssm:/SDLF/Misc/pDomain}}"
+  pCentralCatalog:
+    Description: Central Glue catalog account id
+    Type: String
+    AllowedPattern: (\d{12}|^$)
+    ConstraintDescription: Must be an AWS account ID
+    Default: "000000000000"
   pDatasetName:
     Description: The name of the dataset (all lowercase, no symbols or spaces)
     Type: String
@@ -46,33 +52,113 @@ Parameters:
         }
       }
 
+Conditions:
+  cNoCentralCatalog: !Equals [!Ref pCentralCatalog, "000000000000"] # there is no central catalog
+  cCentralCatalog: !Not [!Condition cNoCentralCatalog] # there is a central catalog
+  cInCentralCatalogAccount: !Equals [!Ref pCentralCatalog, !Ref AWS::AccountId] # there is a central catalog, and we're in the AWS account it's hosted in
+  cNotInCentralCatalogAccount: !Not [!Condition cInCentralCatalogAccount] # there is a central catalog, but we're in a producer AWS account
+  cCreateResourceLink: !And # is it really useful
+    - !Condition cCentralCatalog
+    - !Condition cNotInCentralCatalogAccount
+  cNoCatalogOrInCatalogAccount: !Or
+    - !Condition cNoCentralCatalog
+    - !Condition cInCentralCatalogAccount
+
 Resources:
   ######## GLUE #########
+  # create a Glue database for this dataset
+  # if this is a central catalog setup, deploy this first in the central catalog, then in the producer catalog
+  # in the producer account, it will then create a resource link to the database in the central catalog account
   rGlueDataCatalog:
     Type: AWS::Glue::Database
     Properties:
       CatalogId: !Ref AWS::AccountId
       DatabaseInput:
-        Description: !Sub "${pTeamName} team ${pDatasetName} metadata catalog"
-        Name: !Sub ${pOrg}_${pDomain}_${pEnvironment}_${pTeamName}_${pDatasetName}_db
+        Description: !If
+          - cCreateResourceLink
+          - !Ref "AWS::NoValue" # Description and resource link cannot exist together in a database!
+          - !Sub "${pTeamName} team ${pDatasetName} metadata catalog"
+        Name: !If
+          - cCreateResourceLink
+          - !Sub "${pOrg}_${pDomain}_${pEnvironment}_${pTeamName}_${pDatasetName}_rl"
+          - !Sub "${pOrg}_${pDomain}_${pEnvironment}_${pTeamName}_${pDatasetName}_db"
+        TargetDatabase: !If
+          - cCreateResourceLink
+          - CatalogId: !Ref pCentralCatalog
+            DatabaseName: !Sub ${pOrg}_${pDomain}_${pEnvironment}_${pTeamName}_${pDatasetName}_db
+          - !Ref "AWS::NoValue"
 
-  rGlueDataCatalogLakeFormationTag:
-      Type: AWS::LakeFormation::TagAssociation
-      Properties:
-        Resource:
-          Database:
-            CatalogId: !Ref AWS::AccountId
-            Name: !Ref rGlueDataCatalog
-        LFTags:
-          - CatalogId: !Ref AWS::AccountId
-            TagKey: !Sub "sdlf:team:${pTeamName}"
-            TagValues:
-              - !Sub ${pTeamName}
+  # tag dataset with lf-tag sdlf:{domain}
+  # if there is no central catalog, the tag and dataset belong to the current account
+  # if there is a central catalog, the tag and dataset belong to the catalog account
+  rGlueDataCatalogDomainLakeFormationTag:
+    Type: AWS::LakeFormation::TagAssociation
+    Condition: cNoCatalogOrInCatalogAccount
+    Properties:
+      LFTags:
+        - CatalogId: !If
+            - cInCentralCatalogAccount
+            - !Ref pCentralCatalog
+            - !Ref AWS::AccountId
+          TagKey: !Sub sdlf:${pDomain}
+          TagValues:
+            - !Ref pDomain
+      Resource:
+        Database:
+          CatalogId: !If
+            - cInCentralCatalogAccount
+            - !Ref pCentralCatalog
+            - !Ref AWS::AccountId
+          Name: !Ref rGlueDataCatalog
+
+  # # associate the
+  # rCentralGlueDataCatalogTeamLakeFormationTag:
+  #   Type: AWS::LakeFormation::TagAssociation
+  #   Condition: cInCentralCatalogAccount
+  #   Properties:
+  #     Resource:
+  #       Database:
+  #         CatalogId: !Ref AWS::AccountId
+  #         Name: !Ref rGlueDataCatalog
+  #     LFTags:
+  #       - CatalogId: !Ref AWS::AccountId
+  #         TagKey: !Sub "sdlf:${pDomain}:${pTeamName}"
+  #         TagValues:
+  #           - !Ref pTeamName
+
+  # rChildCentralGlueDataCatalogTeamLakeFormationTag:
+  #   Type: AWS::LakeFormation::TagAssociation
+  #   Condition: cNotInCentralCatalogAccount
+  #   Properties:
+  #     Resource:
+  #       Database:
+  #         CatalogId: !Ref pCentralCatalog
+  #         Name: !Sub ${pOrg}_${pDomain}_${pEnvironment}_${pTeamName}_${pDatasetName}_db
+  #     LFTags:
+  #       - CatalogId: !Ref pCentralCatalog
+  #         TagKey: !Sub "sdlf:${pDomain}:${pTeamName}"
+  #         TagValues:
+  #           - !Ref pTeamName
+
+  # rGlueDataCatalogDomainLakeFormationTag:
+  #   Type: AWS::LakeFormation::TagAssociation
+  #   Condition: cInCentralCatalogAccount
+  #   Properties:
+  #     Resource:
+  #       Database:
+  #         CatalogId: !Ref AWS::AccountId
+  #         Name: !Ref rGlueDataCatalog
+  #     LFTags:
+  #       - CatalogId: !Ref AWS::AccountId
+  #         TagKey: !Sub "sdlf:${pDomain}"
+  #         TagValues:
+  #           - !Ref pDomain
 
   rGlueCrawler:
     Type: AWS::Glue::Crawler
+    Condition: cNotInCentralCatalogAccount
     Properties:
-      Role: !Sub "{{resolve:ssm:/SDLF/IAM/${pTeamName}/CrawlerRoleArn}}"
+      Role: "{{resolve:ssm:/SDLF/IAM/CrawlerRoleArn}}"
       CrawlerSecurityConfiguration: !Sub "{{resolve:ssm:/SDLF/Glue/${pTeamName}/SecurityConfigurationId}}"
       DatabaseName: !Ref rGlueDataCatalog
       Name: !Sub sdlf-${pTeamName}-${pDatasetName}-post-stage-crawler
@@ -80,30 +166,91 @@ Resources:
         S3Targets:
           - Path: !Sub s3://${pStageBucket}/post-stage/${pTeamName}/${pDatasetName}
 
-  rGlueCrawlerLakeFormationPermissions:
+  rGlueCrawlerResourceLinkLakeFormationPermissions:
     Type: AWS::LakeFormation::Permissions
+    Condition: cCreateResourceLink
     Properties:
       DataLakePrincipal:
-        DataLakePrincipalIdentifier: !Sub "{{resolve:ssm:/SDLF/IAM/${pTeamName}/CrawlerRoleArn}}"
+        DataLakePrincipalIdentifier: "{{resolve:ssm:/SDLF/IAM/CrawlerRoleArn}}"
       Permissions:
-        - CREATE_TABLE
-        - ALTER
-        - DROP
+        - DESCRIBE
       Resource:
         DatabaseResource:
           Name: !Ref rGlueDataCatalog
+
+  # so this gives permissions on target db if we have a resource link
+  # rGlueCrawlerLakeFormationPermissions:
+  #   Type: AWS::LakeFormation::PrincipalPermissions
+  #   DependsOn: rGlueDataCatalog
+  #   Condition: cCreateResourceLink
+  #   Properties:
+  #     Principal:
+  #       DataLakePrincipalIdentifier: arn:aws:iam::436842067083:role/sdlf-cicd-team-iot
+  #       !Sub "{{resolve:ssm:/SDLF/IAM/CrawlerRoleArn}}"
+  #     Resource:
+  #       Database:
+  #         CatalogId: !Ref pCentralCatalog
+  #         Name: !Sub ${pOrg}_${pDomain}_${pEnvironment}_${pTeamName}_${pDatasetName}_db
+  #     Permissions:
+  #       - CREATE_TABLE
+  #       - ALTER
+  #       - DESCRIBE
+  #     PermissionsWithGrantOption: []
+  # rGlueCrawlerLakeFormationPermissions:
+  #   Type: AWS::LakeFormation::Permissions
+  #   DependsOn: rGlueDataCatalog
+  #   Condition: cNotInCentralCatalogAccount
+  #   Properties:
+  #     DataLakePrincipal:
+  #       DataLakePrincipalIdentifier: !Sub "{{resolve:ssm:/SDLF/IAM/CrawlerRoleArn}}"
+  #     Permissions:
+  #       - CREATE_TABLE
+  #       - ALTER
+  #       - DESCRIBE
+  #     Resource:
+  #       DatabaseResource:
+  #         CatalogId: !If
+  #           - cCreateResourceLink
+  #           - !Ref pCentralCatalog
+  #           - !Ref "AWS::NoValue"
+  #         Name: !Sub ${pOrg}_${pDomain}_${pEnvironment}_${pTeamName}_${pDatasetName}_db
+
+  # rGlueCrawlerResourceLinkLakeFormationPermissions:
+  #   Type: AWS::LakeFormation::Permissions
+  #   Condition: cCreateResourceLink
+  #   Properties:
+  #     DataLakePrincipal:
+  #       DataLakePrincipalIdentifier: !Sub "{{resolve:ssm:/SDLF/IAM/CrawlerRoleArn}}"
+  #     Permissions:
+  #       - DESCRIBE
+  #     Resource:
+  #       DatabaseResource:
+  #         Name: !Ref rGlueDataCatalog
 
   ######## SSM #########
   rGlueDataCatalogSsm:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: !Sub /SDLF/Glue/${pTeamName}/${pDatasetName}/DataCatalog
+      Name: !If
+        - cInCentralCatalogAccount
+        - !Sub /SDLF/Glue/${pDomain}/${pTeamName}/${pDatasetName}/DataCatalog
+        - !Sub /SDLF/Glue/${pTeamName}/${pDatasetName}/DataCatalog
+      Type: String
+      Value: !Sub "${pOrg}_${pDomain}_${pEnvironment}_${pTeamName}_${pDatasetName}_db"
+      Description: !Sub "${pTeamName} team ${pDatasetName} metadata catalog"
+
+  rResourceLinkGlueDataCatalogSsm:
+    Type: AWS::SSM::Parameter
+    Condition: cCreateResourceLink
+    Properties:
+      Name: !Sub /SDLF/Glue/${pTeamName}/${pDatasetName}/ResourceLink
       Type: String
       Value: !Ref rGlueDataCatalog
-      Description: !Sub "${pTeamName} team ${pDatasetName} metadata catalog"
+      Description: !Sub "${pTeamName} team ${pDatasetName} resource link"
 
   rGlueCrawlerSsm:
     Type: AWS::SSM::Parameter
+    Condition: cNotInCentralCatalogAccount
     Properties:
       Name: !Sub /SDLF/Glue/${pTeamName}/${pDatasetName}/GlueCrawler
       Type: String
@@ -112,6 +259,7 @@ Resources:
 
   rDatasetSsm:
     Type: AWS::SSM::Parameter
+    Condition: cNotInCentralCatalogAccount
     Properties:
       Name: !Sub /SDLF/Datasets/${pTeamName}/${pDatasetName}
       Type: String

@@ -18,6 +18,12 @@ Parameters:
   pDomain:
     Description: Data domain name
     Type: String
+  pCentralCatalog:
+    Description: Central Glue catalog account id
+    Type: String
+    AllowedPattern: (\d{12}|^$)
+    ConstraintDescription: Must be an AWS account ID
+    Default: "000000000000"
   pCustomBucketPrefix:
     Description: S3 Bucket Prefix if different from default. Must be a valid S3 Bucket name
     Type: String
@@ -71,6 +77,7 @@ Parameters:
 Conditions:
   UseCustomBucketPrefix: !Not [!Equals [!Ref pCustomBucketPrefix, sdlf]]
   RunInVpc: !Equals [!Ref pEnableVpc, true]
+  cCentralCatalog: !Not [!Equals [!Ref pCentralCatalog, "000000000000"]]
 
 Globals:
   Function:
@@ -158,6 +165,7 @@ Resources:
 
   rLakeFormationDataAccessRole: # https://docs.aws.amazon.com/lake-formation/latest/dg/registration-role.html
     Type: AWS::IAM::Role
+#    Condition: cCentralCatalog
     Properties:
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -538,6 +546,7 @@ Resources:
   rRawBucketLakeFormationS3Registration:
     Type: AWS::LakeFormation::Resource
     DependsOn: rLakeFormationDataAccessRolePolicy
+    Condition: cCentralCatalog
     Properties:
       ResourceArn: !Sub arn:${AWS::Partition}:s3:::${rRawBucket}/
       RoleArn: !GetAtt rLakeFormationDataAccessRole.Arn
@@ -597,6 +606,7 @@ Resources:
   rStageBucketLakeFormationS3Registration:
     Type: AWS::LakeFormation::Resource
     DependsOn: rLakeFormationDataAccessRolePolicy
+    Condition: cCentralCatalog
     Properties:
       ResourceArn: !Sub arn:${AWS::Partition}:s3:::${rStageBucket}/
       RoleArn: !GetAtt rLakeFormationDataAccessRole.Arn
@@ -656,6 +666,7 @@ Resources:
   rAnalyticsBucketLakeFormationS3Registration:
     Type: AWS::LakeFormation::Resource
     DependsOn: rLakeFormationDataAccessRolePolicy
+    Condition: cCentralCatalog
     Properties:
       ResourceArn: !Sub arn:${AWS::Partition}:s3:::${rAnalyticsBucket}/
       RoleArn: !GetAtt rLakeFormationDataAccessRole.Arn
@@ -1546,6 +1557,13 @@ Resources:
       Type: String
       Value: !Ref pEnvironment
       Description: Environment name
+  rCentralCatalogSsm:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /SDLF/Misc/CentralCatalog/AccountId
+      Type: String
+      Value: !Ref pCentralCatalog
+      Description: Central Glue catalog account id
   rDataLakeAdminRoleSsm:
     Type: AWS::SSM::Parameter
     Properties:

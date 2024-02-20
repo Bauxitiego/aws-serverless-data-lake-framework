@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: SDLF Catalog entry in dev environment
+
+Parameters:
+  pPipelineReference:
+    Type: String
+    Default: none
+  pDomain:
+    Type: String
+  pEnvironment:
+    Type: String
+  pChildAccountId:
+    Description: Child AWS account ID
+    Type: String
+    AllowedPattern: (\d{12}|^$)
+    ConstraintDescription: Must be an AWS account ID
+  pTeams:
+    Description: List of teams in this domain
+    Type: CommaDelimitedList
+  pRawBucket:
+    Description: Raw bucket name
+    Type: String
+  pStageBucket:
+    Description: Stage bucket name
+    Type: String
+  pAnalyticsBucket:
+    Description: Analytics bucket name
+    Type: String
+
+Resources:
+  rCentralCatalog:
+    Type: awslabs::sdlf::catalog::MODULE
+    Properties:
+      pPipelineReference: !Ref pPipelineReference
+      pDomain: !Ref pDomain
+      pEnvironment: !Ref pEnvironment
+      pChildAccountId: !Ref pChildAccountId
+      pTeams: !Ref pTeams
+      pRawBucket: !Ref pRawBucket
+      pStageBucket: !Ref pStageBucket
+      pAnalyticsBucket: !Ref pAnalyticsBucket

@@ -320,12 +320,29 @@ Resources:
         DataLakePrincipalIdentifier: !GetAtt rStatesExecutionRole.Arn
       Resource:
         LFTagPolicy:
+          CatalogId: "{{resolve:ssm:/SDLF/Misc/CentralCatalog/AccountId}}"
+          ResourceType: TABLE
+          Expression:
+            - TagKey: !Sub "sdlf:${pDomain}:${pTeamName}"
+              TagValues:
+                - !Ref pTeamName
+      Permissions:
+        - SELECT
+      PermissionsWithGrantOption: []
+
+  rChildStatesExecutionLakeFormationPermissions:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Properties:
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt rStatesExecutionRole.Arn
+      Resource:
+        LFTagPolicy:
           CatalogId: !Ref AWS::AccountId
           ResourceType: TABLE
           Expression:
             - TagKey: !Sub "sdlf:team:${pTeamName}"
               TagValues:
-                - !Sub ${pTeamName}
+                - !Ref pTeamName
       Permissions:
         - SELECT
       PermissionsWithGrantOption: []

@@ -190,6 +190,7 @@ Resources:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/EventBridge/${pTeamName}/*
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/SM/${pTeamName}/*
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/Glue/${pTeamName}/*
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/Glue/${pDomain}/${pTeamName}/* # central catalog
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/IAM/${pTeamName}/*
               - Effect: Allow
                 Action:

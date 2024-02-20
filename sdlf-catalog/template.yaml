@@ -1,0 +1,256 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::LanguageExtensions
+Description: Resources to be created by the catalog stack
+
+Parameters:
+  pPipelineReference:
+    Type: String
+    Default: none
+  pCentralCatalog:
+    Description: Central Glue catalog account id
+    Type: String
+    AllowedPattern: (\d{12}|^$)
+    ConstraintDescription: Must be an AWS account ID
+    Default: "000000000000"
+  pDomain:
+    Description: Data domain name
+    Type: String
+  pDomainAccountId:
+    Description: Domain account id
+    Type: String
+    AllowedPattern: (\d{12}|^$)
+    ConstraintDescription: Must be a AWS account id
+  pRawBucket:
+    Description: Raw bucket name
+    Type: String
+  pStageBucket:
+    Description: Stage bucket name
+    Type: String
+  pAnalyticsBucket:
+    Description: Analytics bucket name
+    Type: String
+  pTeams:
+    Description: List of teams in this domain
+    Type: CommaDelimitedList
+
+Conditions:
+  cCentralCatalog: !Equals [!Ref pCentralCatalog, !Ref "AWS::AccountId"]
+  cNoCentralCatalog: !Not [!Condition cCentralCatalog]
+
+Resources:
+  rLakeFormationDataAccessRole: # https://docs.aws.amazon.com/lake-formation/latest/dg/registration-role.html
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lakeformation.amazonaws.com
+                - glue.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:CreateLogGroup
+                - logs:PutLogEvents
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws-lakeformation-acceleration/*"
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws-lakeformation-acceleration/*:log-stream:*"
+
+  rLakeFormationDataAccessRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: sdlf-lakeformation
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetObject*
+              - s3:GetBucket*
+              - s3:List*
+              - s3:DeleteObject*
+              - s3:PutObject
+              - s3:PutObjectLegalHold
+              - s3:PutObjectRetention
+              - s3:PutObjectTagging
+              - s3:PutObjectVersionTagging
+              - s3:Abort*
+            Resource:
+              - !Sub "arn:${AWS::Partition}:s3:::${pRawBucket}"
+              - !Sub "arn:${AWS::Partition}:s3:::${pStageBucket}"
+              - !Sub "arn:${AWS::Partition}:s3:::${pAnalyticsBucket}"
+              - !Sub "arn:${AWS::Partition}:s3:::${pRawBucket}/*"
+              - !Sub "arn:${AWS::Partition}:s3:::${pStageBucket}/*"
+              - !Sub "arn:${AWS::Partition}:s3:::${pAnalyticsBucket}/*"
+          - Effect: Allow
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: "*"
+            Condition:
+              "ForAnyValue:StringLike":
+                "kms:ResourceAliases":
+                  - !Sub alias/sdlf-${pDomain}-kms-key
+                  - !Sub alias/sdlf-${pDomain}-kms-data-key
+      Roles:
+        - !Ref rLakeFormationDataAccessRole
+
+  rRawBucketLakeFormationS3Registration:
+    Type: AWS::LakeFormation::Resource
+    DependsOn: rLakeFormationDataAccessRolePolicy
+    Properties:
+      ResourceArn: !Sub arn:${AWS::Partition}:s3:::${pRawBucket}
+      RoleArn: !GetAtt rLakeFormationDataAccessRole.Arn
+      UseServiceLinkedRole: False
+
+  rStageBucketLakeFormationS3Registration:
+    Type: AWS::LakeFormation::Resource
+    DependsOn: rLakeFormationDataAccessRolePolicy
+    Properties:
+      ResourceArn: !Sub arn:${AWS::Partition}:s3:::${pStageBucket}
+      RoleArn: !GetAtt rLakeFormationDataAccessRole.Arn
+      UseServiceLinkedRole: False
+
+  rAnalyticsBucketLakeFormationS3Registration:
+    Type: AWS::LakeFormation::Resource
+    DependsOn: rLakeFormationDataAccessRolePolicy
+    Properties:
+      ResourceArn: !Sub arn:${AWS::Partition}:s3:::${pAnalyticsBucket}
+      RoleArn: !GetAtt rLakeFormationDataAccessRole.Arn
+      UseServiceLinkedRole: False
+
+  # create a lf-tag per domain
+  rDomainLakeFormationTag:
+    Type: AWS::LakeFormation::Tag
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      # sdlf:domain as key and domain names as values would be best but impossible here (there is no getting all domains at this step)
+      TagKey: !Sub "sdlf:${pDomain}"
+      TagValues:
+        - !Ref pDomain
+
+  # the sdlf:{domain} lf-tag is associated to all datasets when using sdlf-dataset
+  "Fn::ForEach::TeamsDomainTag":
+  - pTeam
+  - !Ref pTeams
+  - "r${pTeam}DomainLakeFormationTagPermissions":
+      Type: AWS::LakeFormation::PrincipalPermissions
+      Properties:
+        Principal:
+          DataLakePrincipalIdentifier: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/sdlf-cicd-team-${pTeam}
+        Resource:
+          LFTag:
+            CatalogId: !Ref AWS::AccountId
+            TagKey: !Ref rDomainLakeFormationTag
+            TagValues:
+              - !Ref pDomain
+        Permissions:
+          - ASSOCIATE
+        PermissionsWithGrantOption: []
+
+  # create a lf-tag per team in this domain
+  # the sdlf:{domain}:{team} lf-tag is associated with teams' datasets when using sdlf-dataset
+  "Fn::ForEach::TeamsTeamTag":
+  - pTeam
+  - !Ref pTeams
+  - "r${pTeam}LakeFormationTag":
+      Type: AWS::LakeFormation::Tag
+      Properties:
+        CatalogId: !Ref AWS::AccountId
+        TagKey: !Sub "sdlf:${pDomain}:${pTeam}"
+        TagValues:
+          - !Ref pTeam
+    "r${pTeam}TeamLakeFormationTagPermissions":
+      Type: AWS::LakeFormation::PrincipalPermissions
+      Properties:
+        Principal:
+          DataLakePrincipalIdentifier: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/sdlf-cicd-team-${pTeam}
+        Resource:
+          LFTag:
+            CatalogId: !Ref AWS::AccountId
+            TagKey:
+              Ref: !Sub r${pTeam}LakeFormationTag
+            TagValues:
+              - !Ref pTeam
+        Permissions:
+          - ASSOCIATE
+        PermissionsWithGrantOption: []
+
+
+  # central catalog: share stage bucket location with the domain account
+  # this is mainly for providing permissions to glue crawlers
+  # it would be possible to use an IAM principal as DataLakePrincipalIdentifier but Lake Formation handling of crossaccount principals' deletion is not optimal in SDLF case
+  rStageBucketDataLocationAccess:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    DependsOn: rStageBucketLakeFormationS3Registration
+    Condition: cCentralCatalog
+    Properties:
+      Principal:
+        DataLakePrincipalIdentifier: !Ref pDomainAccountId
+      Resource:
+        DataLocation:
+          CatalogId: !Ref AWS::AccountId
+          ResourceArn: !Sub arn:${AWS::Partition}:s3:::${pStageBucket}
+      Permissions:
+        - DATA_LOCATION_ACCESS
+      PermissionsWithGrantOption:
+        - DATA_LOCATION_ACCESS
+
+  # central catalog: share tagged databases with the domain account
+  rDomainLakeFormationTagDatabasePermissions:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Condition: cCentralCatalog
+    Properties:
+      Principal:
+        DataLakePrincipalIdentifier: !Ref pDomainAccountId
+      Resource:
+        LFTagPolicy:
+          CatalogId: !Ref AWS::AccountId
+          ResourceType: DATABASE
+          Expression:
+            - TagKey: !Ref rDomainLakeFormationTag
+              TagValues:
+                - !Ref pDomain
+      Permissions:
+        - DESCRIBE
+        - CREATE_TABLE
+        - ALTER
+      PermissionsWithGrantOption:
+        - DESCRIBE
+        - CREATE_TABLE
+        - ALTER
+
+  rDomainLakeFormationTagTablesPermissions:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Condition: cCentralCatalog
+    Properties:
+      Principal:
+        DataLakePrincipalIdentifier: !Ref pDomainAccountId
+      Resource:
+        LFTagPolicy:
+          CatalogId: !Ref AWS::AccountId
+          ResourceType: TABLE
+          Expression:
+            - TagKey: !Ref rDomainLakeFormationTag
+              TagValues:
+                - !Ref pDomain
+      Permissions:
+        - ALL
+      PermissionsWithGrantOption:
+        - ALL
+
+Outputs:
+  oPipelineReference:
+    Description: CodePipeline reference this stack has been deployed with
+    Value: !Ref pPipelineReference

@@ -14,6 +14,12 @@ Parameters:
     Description: Data domain name
     Type: String
     Default: "{{resolve:ssm:/SDLF/Misc/pDomain}}"
+  pCentralCatalog:
+    Description: Central Glue catalog account id
+    Type: String
+    AllowedPattern: (\d{12}|^$)
+    ConstraintDescription: Must be an AWS account ID
+    Default: "000000000000"
   pAnalyticsBucket:
     Description: The analytics bucket for the solution
     Type: String
@@ -94,6 +100,8 @@ Parameters:
 
 Conditions:
   RunInVpc: !Equals [!Ref pEnableVpc, true]
+  cNoCentralCatalog: !Equals [!Ref pCentralCatalog, "000000000000"]
+  cCentralCatalog: !Not [!Condition cNoCentralCatalog]
 
 Globals:
   Function:
@@ -554,6 +562,7 @@ Resources:
             reason: The actions with "*" are all ones that only support the all resources wildcard
     Properties:
       Path: !Sub /sdlf-${pTeamName}/
+      RoleName: !Sub sdlf-${pTeamName}-gluecrawler1
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -904,93 +913,6 @@ Resources:
       Type: String
       Value: !Ref rSNSTopic
       Description: The ARN of the team-specific SNS Topic
-
-  ######## LAKEFORMATION PERMISSIONS #########
-  rCentralTeamLakeFormationPermissions:
-    Type: AWS::LakeFormation::Permissions
-    Properties:
-      DataLakePrincipal:
-        DataLakePrincipalIdentifier: !GetAtt rDatalakeCrawlerRole.Arn
-      Permissions:
-        - DATA_LOCATION_ACCESS
-      Resource:
-        DataLocationResource:
-          S3Resource: !Sub arn:${AWS::Partition}:s3:::${pCentralBucket}/${pTeamName}/
-
-  rStagePreTeamLakeFormationPermissions:
-    Type: AWS::LakeFormation::Permissions
-    Properties:
-      DataLakePrincipal:
-        DataLakePrincipalIdentifier: !GetAtt rDatalakeCrawlerRole.Arn
-      Permissions:
-        - DATA_LOCATION_ACCESS
-      Resource:
-        DataLocationResource:
-          S3Resource: !Sub arn:${AWS::Partition}:s3:::${pStageBucket}/pre-stage/${pTeamName}/
-
-  rStagePostTeamLakeFormationPermissions:
-    Type: AWS::LakeFormation::Permissions
-    Properties:
-      DataLakePrincipal:
-        DataLakePrincipalIdentifier: !GetAtt rDatalakeCrawlerRole.Arn
-      Permissions:
-        - DATA_LOCATION_ACCESS
-      Resource:
-        DataLocationResource:
-          S3Resource: !Sub arn:${AWS::Partition}:s3:::${pStageBucket}/post-stage/${pTeamName}/
-
-  rAnalyticsTeamLakeFormationPermissions:
-    Type: AWS::LakeFormation::Permissions
-    Properties:
-      DataLakePrincipal:
-        DataLakePrincipalIdentifier: !GetAtt rDatalakeCrawlerRole.Arn
-      Permissions:
-        - DATA_LOCATION_ACCESS
-      Resource:
-        DataLocationResource:
-          S3Resource: !Sub arn:${AWS::Partition}:s3:::${pAnalyticsBucket}/${pTeamName}/
-
-  rTeamLakeFormationTag:
-    Type: AWS::LakeFormation::Tag
-    Properties:
-      CatalogId: !Ref AWS::AccountId
-      # sdlf:team as key and team names as values would be best but impossible here
-      TagKey: !Sub "sdlf:team:${pTeamName}"
-      TagValues:
-        - !Sub ${pTeamName}
-
-  rTeamLakeFormationTagPermissions: # allows associating this lf-tag to datasets in sdlf-dataset
-      Type: AWS::LakeFormation::PrincipalPermissions
-      Properties:
-        Principal:
-          DataLakePrincipalIdentifier: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/sdlf-cicd-team-${pTeamName}
-        Resource:
-          LFTag:
-            CatalogId: !Ref AWS::AccountId
-            TagKey: !Ref rTeamLakeFormationTag
-            TagValues:
-              - !Sub ${pTeamName}
-        Permissions:
-          - ASSOCIATE
-        PermissionsWithGrantOption: []
-
-  rTeamLakeFormationTagTablesPermissions: # allows sdlf pipelines to grant permissions on tables associated with this lf-tag
-    Type: AWS::LakeFormation::PrincipalPermissions
-    Properties:
-      Principal:
-        DataLakePrincipalIdentifier: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/sdlf-cicd-team-${pTeamName}
-      Resource:
-        LFTagPolicy:
-          CatalogId: !Ref AWS::AccountId
-          ResourceType: TABLE
-          Expression:
-            - TagKey: !Ref rTeamLakeFormationTag
-              TagValues:
-                - !Sub ${pTeamName}
-      Permissions:
-        - ALL
-      PermissionsWithGrantOption:
-        - ALL
 
   rAthenaWorkgroup:
     Type: AWS::Athena::WorkGroup

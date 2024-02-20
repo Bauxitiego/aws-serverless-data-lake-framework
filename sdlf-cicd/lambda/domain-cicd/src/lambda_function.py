@@ -29,7 +29,9 @@ def delete_domain_cicd_stack(domain, environment, cloudformation_role):
     return (stack_name, "stack_delete_complete")
 
 
-def create_domain_cicd_stack(domain, environment, template_body_url, child_account, cloudformation_role):
+def create_domain_cicd_stack(
+    domain, environment, template_body_url, domain_org, central_catalog, child_account, teams, cloudformation_role
+):
     response = {}
     cloudformation_waiter_type = None
     stack_name = f"sdlf-cicd-domain-{domain}-{environment}"
@@ -38,6 +40,16 @@ def create_domain_cicd_stack(domain, environment, template_body_url, child_accou
             StackName=stack_name,
             TemplateURL=template_body_url,
             Parameters=[
+                {
+                    "ParameterKey": "pOrg",
+                    "ParameterValue": domain_org,
+                    "UsePreviousValue": False,
+                },
+                {
+                    "ParameterKey": "pCentralCatalog",
+                    "ParameterValue": central_catalog,
+                    "UsePreviousValue": False,
+                },
                 {
                     "ParameterKey": "pChildAccountId",
                     "ParameterValue": child_account,
@@ -51,6 +63,11 @@ def create_domain_cicd_stack(domain, environment, template_body_url, child_accou
                 {
                     "ParameterKey": "pEnvironment",
                     "ParameterValue": environment,
+                    "UsePreviousValue": False,
+                },
+                {
+                    "ParameterKey": "pTeams",
+                    "ParameterValue": teams,
                     "UsePreviousValue": False,
                 },
             ],
@@ -71,6 +88,16 @@ def create_domain_cicd_stack(domain, environment, template_body_url, child_accou
                 TemplateURL=template_body_url,
                 Parameters=[
                     {
+                        "ParameterKey": "pOrg",
+                        "ParameterValue": domain_org,
+                        "UsePreviousValue": False,
+                    },
+                    {
+                        "ParameterKey": "pCentralCatalog",
+                        "ParameterValue": central_catalog,
+                        "UsePreviousValue": False,
+                    },
+                    {
                         "ParameterKey": "pChildAccountId",
                         "ParameterValue": child_account,
                         "UsePreviousValue": False,
@@ -83,6 +110,11 @@ def create_domain_cicd_stack(domain, environment, template_body_url, child_accou
                     {
                         "ParameterKey": "pEnvironment",
                         "ParameterValue": environment,
+                        "UsePreviousValue": False,
+                    },
+                    {
+                        "ParameterKey": "pTeams",
+                        "ParameterValue": teams,
                         "UsePreviousValue": False,
                     },
                 ],
@@ -174,15 +206,62 @@ def lambda_handler(event, context):
             domain = domain_file.split("-")[1]
             domains.append(f"{domain}-{environment}")
 
+            domain_org = ""
+            with open(os.path.join(temp_directory, domain_file), "r", encoding="utf-8") as template_domain:
+                while line := template_domain.readline():
+                    if "pOrg:" in line:
+                        domain_org = line.split(":", 1)[-1].strip()
+                        break
+                    if "TemplateURL:" in line:
+                        with open(
+                            os.path.join(temp_directory, line.split(":", 1)[-1].strip()),
+                            "r",
+                            encoding="utf-8",
+                        ) as nested_stack:
+                            while nested_stack_line := nested_stack.readline():
+                                if "pOrg:" in nested_stack_line:
+                                    domain_org = nested_stack_line.split(":", 1)[-1].strip()
+                                    break
+                    if domain_org:
+                        break
+            logger.info("pOrg: %s", domain_org)
+            central_catalog = "000000000000"
+            # TODO we can do much better (browsing the same files three times is a bit nut) but let's get it working first
+            with open(os.path.join(temp_directory, domain_file), "r", encoding="utf-8") as template_domain:
+                while line := template_domain.readline():
+                    if "pCentralCatalog:" in line:
+                        central_catalog = line.split(":", 1)[-1].strip()
+                        if "AWS::AccountId" in central_catalog:  # same account setup, usually for workshops/demo
+                            central_catalog = context.invoked_function_arn.split(":")[4]
+                        break
+                    if "TemplateURL:" in line:
+                        with open(
+                            os.path.join(temp_directory, line.split(":", 1)[-1].strip()),
+                            "r",
+                            encoding="utf-8",
+                        ) as nested_stack:
+                            while nested_stack_line := nested_stack.readline():
+                                if "pCentralCatalog:" in nested_stack_line:
+                                    central_catalog = nested_stack_line.split(":", 1)[-1].strip()
+                                    if (
+                                        "AWS::AccountId" in central_catalog
+                                    ):  # same account setup, usually for workshops/demo
+                                        central_catalog = context.invoked_function_arn.split(":")[4]
+                                    break
+                    if central_catalog != "000000000000":
+                        break
+            logger.info("pCentralCatalog: %s", central_catalog)
             child_account = ""
+            teams = []
             with open(os.path.join(temp_directory, domain_file), "r", encoding="utf-8") as template_domain:
                 while line := template_domain.readline():
                     if "pChildAccountId:" in line:
                         child_account = line.split(":", 1)[-1].strip()
                         if "AWS::AccountId" in child_account:  # same account setup, usually for workshops/demo
                             child_account = context.invoked_function_arn.split(":")[4]
-                        break
-                    if "TemplateURL:" in line:
+                    elif "pTeamName:" in line:
+                        teams.append(line.split(":", 1)[-1].strip())
+                    elif "TemplateURL:" in line:  # teams can be declared in nested stacks
                         with open(
                             os.path.join(temp_directory, line.split(":", 1)[-1].strip()),
                             "r",
@@ -195,11 +274,10 @@ def lambda_handler(event, context):
                                         "AWS::AccountId" in child_account
                                     ):  # same account setup, usually for workshops/demo
                                         child_account = context.invoked_function_arn.split(":")[4]
-                                    break
-                    if child_account:
-                        break
+                                elif "pTeamName:" in nested_stack_line:
+                                    teams.append(nested_stack_line.split(":", 1)[-1].strip())
             logger.info("pChildAccountId: %s", child_account)
-
+            logger.info("DATA DOMAIN (%s) TEAMS: %s", domain, teams)
             # create/update stacks for domains defined in git
             cloudformation_waiters = {
                 "stack_create_complete": [],
@@ -209,7 +287,10 @@ def lambda_handler(event, context):
                 domain,
                 environment,
                 template_cicd_domain_url,
+                domain_org,
+                central_catalog,
                 child_account,
+                ",".join(teams),
                 cloudformation_role,
             )
             if stack_details[1]:

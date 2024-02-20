@@ -110,7 +110,10 @@ def create_team_pipeline_cicd_stack(
     environment,
     team_name,
     crossaccount_team_role,
+    crossaccount_central_catalog_team_role,
     template_body_url,
+    domain_org,
+    central_catalog,
     child_account,
     cloudformation_role,
 ):
@@ -125,6 +128,16 @@ def create_team_pipeline_cicd_stack(
                 {
                     "ParameterKey": "pChildAccountId",
                     "ParameterValue": child_account,
+                    "UsePreviousValue": False,
+                },
+                {
+                    "ParameterKey": "pCentralCatalog",
+                    "ParameterValue": central_catalog,
+                    "UsePreviousValue": False,
+                },
+                {
+                    "ParameterKey": "pOrg",
+                    "ParameterValue": domain_org,
                     "UsePreviousValue": False,
                 },
                 {
@@ -145,6 +158,11 @@ def create_team_pipeline_cicd_stack(
                 {
                     "ParameterKey": "pCrossAccountTeamRole",
                     "ParameterValue": crossaccount_team_role,
+                    "UsePreviousValue": False,
+                },
+                {
+                    "ParameterKey": "pCrossAccountCentralCatalogTeamRole",
+                    "ParameterValue": crossaccount_central_catalog_team_role,
                     "UsePreviousValue": False,
                 },
             ],
@@ -170,6 +188,16 @@ def create_team_pipeline_cicd_stack(
                         "UsePreviousValue": False,
                     },
                     {
+                        "ParameterKey": "pCentralCatalog",
+                        "ParameterValue": central_catalog,
+                        "UsePreviousValue": False,
+                    },
+                    {
+                        "ParameterKey": "pOrg",
+                        "ParameterValue": domain_org,
+                        "UsePreviousValue": False,
+                    },
+                    {
                         "ParameterKey": "pDomain",
                         "ParameterValue": domain,
                         "UsePreviousValue": False,
@@ -187,6 +215,11 @@ def create_team_pipeline_cicd_stack(
                     {
                         "ParameterKey": "pCrossAccountTeamRole",
                         "ParameterValue": crossaccount_team_role,
+                        "UsePreviousValue": False,
+                    },
+                    {
+                        "ParameterKey": "pCrossAccountCentralCatalogTeamRole",
+                        "ParameterValue": crossaccount_central_catalog_team_role,
                         "UsePreviousValue": False,
                     },
                 ],
@@ -309,7 +342,7 @@ def lambda_handler(event, context):
         ###### GET LIST OF TEAMS ######
         for domain_file in domain_files:
             domain = domain_file.split("-")[1]
-            domains[domain] = {"child_account": "", "teams": []}
+            domains[domain] = {"org": "", "central_catalog": "000000000000", "child_account": "", "teams": []}
             with open(os.path.join(temp_directory, domain_file), "r", encoding="utf-8") as template_domain:
                 while line := template_domain.readline():
                     if "pChildAccountId:" in line:
@@ -318,6 +351,14 @@ def lambda_handler(event, context):
                             "AWS::AccountId" in domains[domain]["child_account"]
                         ):  # same account setup, usually for workshops/demo
                             domains[domain]["child_account"] = context.invoked_function_arn.split(":")[4]
+                    elif "pOrg:" in line:
+                        domains[domain]["org"] = line.split(":", 1)[-1].strip()
+                    elif "pCentralCatalog:" in line:
+                        domains[domain]["central_catalog"] = line.split(":", 1)[-1].strip()
+                        if (
+                            "AWS::AccountId" in domains[domain]["central_catalog"]
+                        ):  # same account setup, usually for workshops/demo
+                            domains[domain]["central_catalog"] = context.invoked_function_arn.split(":")[4]
                     elif "pTeamName:" in line:
                         domains[domain]["teams"].append(line.split(":", 1)[-1].strip())
                     elif "TemplateURL:" in line:  # teams can be declared in nested stacks
@@ -333,6 +374,14 @@ def lambda_handler(event, context):
                                         "AWS::AccountId" in domains[domain]["child_account"]
                                     ):  # same account setup, usually for workshops/demo
                                         domains[domain]["child_account"] = context.invoked_function_arn.split(":")[4]
+                                elif "pOrg:" in nested_stack_line:
+                                    domains[domain]["org"] = nested_stack_line.split(":", 1)[-1].strip()
+                                elif "pCentralCatalog:" in nested_stack_line:
+                                    domains[domain]["central_catalog"] = nested_stack_line.split(":", 1)[-1].strip()
+                                    if (
+                                        "AWS::AccountId" in domains[domain]["central_catalog"]
+                                    ):  # same account setup, usually for workshops/demo
+                                        domains[domain]["central_catalog"] = context.invoked_function_arn.split(":")[4]
                                 elif "pTeamName:" in nested_stack_line:
                                     domains[domain]["teams"].append(nested_stack_line.split(":", 1)[-1].strip())
         logger.info("DATA DOMAIN DETAILS: %s", domains)
@@ -462,12 +511,18 @@ def lambda_handler(event, context):
                 crossaccount_team_role = (
                     f"arn:{partition}:iam::{domain_details['child_account']}:role/sdlf-cicd-team-{team}"
                 )
+                crossaccount_central_catalog_team_role = (
+                    f"arn:{partition}:iam::{domain_details['central_catalog']}:role/sdlf-cicd-team-{team}"
+                )
                 stack_details = create_team_pipeline_cicd_stack(
                     domain,
                     environment,
                     team,
                     crossaccount_team_role,
+                    crossaccount_central_catalog_team_role,
                     template_cicd_team_pipeline_url,
+                    domain_details["org"],
+                    domain_details["central_catalog"],
                     domain_details["child_account"],
                     cloudformation_role,
                 )

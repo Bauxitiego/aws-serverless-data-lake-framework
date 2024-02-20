@@ -209,6 +209,32 @@ def lambda_handler(event, context):
             domain = domain_file.split("-")[1]
             domains.append(f"{domain}-{environment}")
 
+            central_catalog = "000000000000"
+            # TODO we can do much better (browsing the same files this many times is a bit nut) but let's get it working first
+            with open(os.path.join(temp_directory, domain_file), "r", encoding="utf-8") as template_domain:
+                while line := template_domain.readline():
+                    if "pCentralCatalog:" in line:
+                        central_catalog = line.split(":", 1)[-1].strip()
+                        if "AWS::AccountId" in central_catalog:  # same account setup, usually for workshops/demo
+                            central_catalog = context.invoked_function_arn.split(":")[4]
+                        break
+                    if "TemplateURL:" in line:
+                        with open(
+                            os.path.join(temp_directory, line.split(":", 1)[-1].strip()),
+                            "r",
+                            encoding="utf-8",
+                        ) as nested_stack:
+                            while nested_stack_line := nested_stack.readline():
+                                if "pCentralCatalog:" in nested_stack_line:
+                                    central_catalog = nested_stack_line.split(":", 1)[-1].strip()
+                                    if (
+                                        "AWS::AccountId" in central_catalog
+                                    ):  # same account setup, usually for workshops/demo
+                                        central_catalog = context.invoked_function_arn.split(":")[4]
+                                    break
+                    if central_catalog != "000000000000":
+                        break
+            logger.info("pCentralCatalog: %s", central_catalog)
             child_account = ""
             teams = []
             with open(os.path.join(temp_directory, domain_file), "r", encoding="utf-8") as template_domain:
@@ -286,6 +312,76 @@ def lambda_handler(event, context):
             grants_ids = []
             for team in teams:
                 crossaccount_team_role = f"arn:{partition}:iam::{child_account}:role/sdlf-cicd-team-{team}"
+                crossaccount_team_roles.append(crossaccount_team_role)
+                # unfortunately kms grants cannot be defined using cloudformation
+                grant_id = kms.create_grant(
+                    KeyId=devops_kms_key,
+                    GranteePrincipal=crossaccount_team_role,
+                    Operations=[
+                        "DescribeKey",
+                        "Decrypt",
+                        "Encrypt",
+                        "GenerateDataKey",
+                        "GenerateDataKeyPair",
+                        "GenerateDataKeyPairWithoutPlaintext",
+                        "GenerateDataKeyWithoutPlaintext",
+                        "ReEncryptFrom",
+                        "ReEncryptTo",
+                    ],
+                )["GrantId"]
+                grants_ids.append(grant_id)
+            # revoke all grants for the same grantee principal except the ones that were just created
+            grants = kms.list_grants(KeyId=devops_kms_key)["Grants"]
+            for grant in grants:
+                if grant["GranteePrincipal"] in crossaccount_team_roles and grant["GrantId"] not in grants_ids:
+                    kms.revoke_grant(KeyId=devops_kms_key, GrantId=grant["GrantId"])
+
+            # assume role in central catalog account to be able to deploy a cloudformation stack
+            crossaccount_pipeline_role = (
+                f"arn:{partition}:iam::{central_catalog}:role/sdlf-cicd-devops-crossaccount-pipeline"
+            )
+            crossaccount_role_session = sts.assume_role(
+                RoleArn=crossaccount_pipeline_role, RoleSessionName="CrossAccountTeamLambda"
+            )
+            cloudformation = boto3.client(
+                "cloudformation",
+                aws_access_key_id=crossaccount_role_session["Credentials"]["AccessKeyId"],
+                aws_secret_access_key=crossaccount_role_session["Credentials"]["SecretAccessKey"],
+                aws_session_token=crossaccount_role_session["Credentials"]["SessionToken"],
+                endpoint_url=cloudformation_endpoint_url,
+            )
+
+            # from this assumed role, deploy a cloudformation stack
+            # this stack creates a role in the central catalog that will be used to deploy a team's datasets
+            crossaccount_cloudformation_role = f"arn:{partition}:iam::{central_catalog}:role/sdlf-cicd-team"
+            cloudformation_waiters = {
+                "stack_create_complete": [],
+                "stack_update_complete": [],
+            }
+            for team in teams:
+                stack_details = create_domain_team_role_stack(
+                    cloudformation,
+                    team,
+                    artifacts_bucket,
+                    devops_kms_key,
+                    environment,
+                    domain,
+                    template_cicd_domain_team_role_url,
+                    crossaccount_cloudformation_role,
+                )
+                if stack_details[1]:
+                    cloudformation_waiters[stack_details[1]].append(stack_details[0])
+            cloudformation_create_waiter = cloudformation.get_waiter("stack_create_complete")
+            cloudformation_update_waiter = cloudformation.get_waiter("stack_update_complete")
+            for stack in cloudformation_waiters["stack_create_complete"]:
+                cloudformation_create_waiter.wait(StackName=stack, WaiterConfig={"Delay": 30, "MaxAttempts": 10})
+            for stack in cloudformation_waiters["stack_update_complete"]:
+                cloudformation_update_waiter.wait(StackName=stack, WaiterConfig={"Delay": 30, "MaxAttempts": 10})
+
+            crossaccount_team_roles = []
+            grants_ids = []
+            for team in teams:
+                crossaccount_team_role = f"arn:{partition}:iam::{central_catalog}:role/sdlf-cicd-team-{team}"
                 crossaccount_team_roles.append(crossaccount_team_role)
                 # unfortunately kms grants cannot be defined using cloudformation
                 grant_id = kms.create_grant(

@@ -1,0 +1,65 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::LanguageExtensions
+Description: Resources to be created by the catalog stack
+
+Parameters:
+  pPipelineReference:
+    Type: String
+    Default: none
+  pDomain:
+    Description: Data domain name
+    Type: String
+  pCentralCatalog:
+    Description: Central Glue catalog account id
+    Type: String
+    AllowedPattern: (\d{12}|^$)
+    ConstraintDescription: Must be an AWS account ID
+  pTeams:
+    Description: List of teams in this domain
+    Type: CommaDelimitedList
+  pGlueCrawlerRole:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /SDLF/IAM/CrawlerRoleArn
+  pStageBucket:
+    Description: Stage bucket name
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /SDLF/S3/StageBucket
+
+Resources:
+  # Glue Crawler requires access to Glue databases as well as the underlying S3 bucket
+  rGlueCrawlerLakeFormationTagPermissions:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Properties:
+      Principal:
+        DataLakePrincipalIdentifier: !Ref pGlueCrawlerRole
+      Resource:
+        LFTagPolicy:
+          CatalogId: !Ref pCentralCatalog
+          ResourceType: DATABASE
+          Expression:
+            - TagKey: !Sub "sdlf:${pDomain}"
+              TagValues:
+                - !Ref pDomain
+      Permissions:
+        - CREATE_TABLE
+        - ALTER
+        - DESCRIBE
+      PermissionsWithGrantOption: []
+
+  rGlueCrawlerStageBucketDataLocationAccess:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Properties:
+      Principal:
+        DataLakePrincipalIdentifier: !Ref pGlueCrawlerRole
+      Resource:
+        DataLocation:
+          CatalogId: !Ref pCentralCatalog
+          ResourceArn: !Sub arn:${AWS::Partition}:s3:::${pStageBucket}
+      Permissions:
+        - DATA_LOCATION_ACCESS
+      PermissionsWithGrantOption: []
+
+Outputs:
+  oPipelineReference:
+    Description: CodePipeline reference this stack has been deployed with
+    Value: !Ref pPipelineReference

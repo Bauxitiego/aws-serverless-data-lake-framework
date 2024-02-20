@@ -10,6 +10,16 @@ Parameters:
     Description: The KMS key used by CodeBuild and CodePipeline
     Type: AWS::SSM::Parameter::Value<String>
     Default: /SDLF/KMS/CICDKeyId
+  pOrg:
+    Description: Name of the organization owning the datalake (all lowercase, no symbols or spaces)
+    Type: String
+    AllowedPattern: "[a-z0-9]{2,9}"
+  pCentralCatalog:
+    Description: Catalog AWS account ID
+    Type: String
+    AllowedPattern: (\d{12}|^$)
+    ConstraintDescription: Must be an AWS account ID
+    Default: "000000000000"
   pMainRepository:
     Type: AWS::SSM::Parameter::Value<String>
     Default: /SDLF/CodeCommit/MainCodeCommit
@@ -26,6 +36,9 @@ Parameters:
     Description: Environment name
     Type: String
     AllowedValues: [dev, test, prod]
+  pTeams:
+    Description: Comma-delimited list of teams in this domain
+    Type: String
   pBuildCloudformationModuleStage:
     Description: CodeBuild job that build a CloudFormation module from a SAM template
     Type: AWS::SSM::Parameter::Value<String>
@@ -41,6 +54,9 @@ Parameters:
   pCicdRepository:
     Type: AWS::SSM::Parameter::Value<String>
     Default: /SDLF/CodeCommit/CicdCodeCommit
+  pCatalogRepository:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /SDLF/CodeCommit/CatalogCodeCommit
   pFoundationsRepository:
     Type: AWS::SSM::Parameter::Value<String>
     Default: /SDLF/CodeCommit/FoundationsCodeCommit
@@ -67,6 +83,7 @@ Mappings:
 
 Conditions:
   EnableMonitoring: !Equals [!Ref pEnableMonitoring, true]
+  cCentralCatalog: !Not [!Equals [!Ref pCentralCatalog, "000000000000"]]
 
 Resources:
   ######## CODEPIPELINE #########
@@ -98,6 +115,10 @@ Resources:
                   - codecommit:CancelUploadArchive
                 Resource:
                   - !Sub arn:${AWS::Partition}:codecommit:${AWS::Region}:${AWS::AccountId}:${pCicdRepository}
+                  - !If
+                      - cCentralCatalog
+                      - !Sub "arn:${AWS::Partition}:codecommit:${AWS::Region}:${AWS::AccountId}:${pCatalogRepository}"
+                      - !Ref AWS::NoValue
                   - !Sub arn:${AWS::Partition}:codecommit:${AWS::Region}:${AWS::AccountId}:${pFoundationsRepository}
                   - !Sub arn:${AWS::Partition}:codecommit:${AWS::Region}:${AWS::AccountId}:${pTeamRepository}
                   - !Sub arn:${AWS::Partition}:codecommit:${AWS::Region}:${AWS::AccountId}:${pMainRepository}
@@ -136,6 +157,10 @@ Resources:
                 Action: sts:AssumeRole
                 Resource:
                   - !Sub arn:${AWS::Partition}:iam::${pChildAccountId}:role/sdlf-cicd-devops-crossaccount-pipeline
+                  - !If
+                      - cCentralCatalog
+                      - !Sub "arn:${AWS::Partition}:iam::${pCentralCatalog}:role/sdlf-cicd-devops-crossaccount-pipeline"
+                      - !Ref AWS::NoValue
 
   rDomainCodePipeline:
     Type: AWS::CodePipeline::Pipeline
@@ -201,6 +226,19 @@ Resources:
                 BranchName: !FindInMap [pCodeCommitBranch, !Ref pEnvironment, branch]
                 PollForSourceChanges: false
               RunOrder: 1
+            - Name: SourceCatalog
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: "1"
+                Provider: CodeCommit
+              OutputArtifacts:
+                - Name: SourceCatalogArtifact
+              Configuration:
+                RepositoryName: !Ref pCatalogRepository
+                BranchName: !FindInMap [pCodeCommitBranch, !Ref pEnvironment, branch]
+                PollForSourceChanges: false
+              RunOrder: 1
             - !If
                 - EnableMonitoring
                 - Name: SourceMonitoring
@@ -259,6 +297,28 @@ Resources:
                    {"name":"TEAM_NAME", "value":"${pSdlfModuleTeam}", "type":"PLAINTEXT"},
                    {"name":"MODULE_NAME", "value":"team", "type":"PLAINTEXT"}]
               RunOrder: 1
+            # - !If
+            #     - cCentralCatalog
+            #     - Name: BuildCatalog
+            #       InputArtifacts:
+            #       - Name: SourceCicdArtifact
+            #       - Name: SourceCatalogArtifact
+            #       ActionTypeId:
+            #         Category: Build
+            #         Owner: AWS
+            #         Version: "1"
+            #         Provider: CodeBuild
+            #       Configuration:
+            #         PrimarySource: SourceCatalogArtifact
+            #         ProjectName: !Ref pBuildCloudformationModuleStage
+            #         EnvironmentVariables: !Sub >-
+            #           [{"name":"ENVIRONMENT", "value":"${pEnvironment}", "type":"PLAINTEXT"},
+            #           {"name":"DOMAIN_NAME", "value":"${pSdlfModuleDomain}", "type":"PLAINTEXT"},
+            #           {"name":"DOMAIN_ACCOUNT_ID", "value":"${pCentralCatalog}", "type":"PLAINTEXT"},
+            #           {"name":"TEAM_NAME", "value":"${pSdlfModuleTeam}", "type":"PLAINTEXT"},
+            #           {"name":"MODULE_NAME", "value":"catalog", "type":"PLAINTEXT"}]
+            #       RunOrder: 1
+            #     - !Ref AWS::NoValue
             - !If
                 - EnableMonitoring
                 - Name: BuildMonitoring
@@ -308,6 +368,7 @@ Resources:
               InputArtifacts:
                 - Name: TemplateSource
                 - Name: TemplatePackage
+              Namespace: StackOutputs
               Configuration:
                 ActionMode: CREATE_UPDATE
                 RoleArn: !Sub arn:${AWS::Partition}:iam::${pChildAccountId}:role/sdlf-cicd-domain
@@ -320,6 +381,69 @@ Resources:
                   }
                 Capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
               RunOrder: 1
+        - Name: DeployCatalogInfrastructure
+          Actions:
+            - Name: CreateStack
+              RoleArn: !If
+                - cCentralCatalog
+                - !Sub arn:${AWS::Partition}:iam::${pCentralCatalog}:role/sdlf-cicd-devops-crossaccount-pipeline
+                - !Sub arn:${AWS::Partition}:iam::${pChildAccountId}:role/sdlf-cicd-devops-crossaccount-pipeline
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              InputArtifacts:
+                - Name: SourceCatalogArtifact
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                RoleArn: !If
+                  - cCentralCatalog
+                  - !Sub arn:${AWS::Partition}:iam::${pCentralCatalog}:role/sdlf-cicd-domain
+                  - !Sub arn:${AWS::Partition}:iam::${pChildAccountId}:role/sdlf-cicd-domain
+                StackName: !Sub sdlf-catalog-${pDomain}-${pEnvironment}
+                TemplatePath: "SourceCatalogArtifact::template.yaml"
+                TemplateConfiguration: "SourceCatalogArtifact::tags.json"
+                ParameterOverrides: !Sub |
+                  {
+                    "pPipelineReference" : "#{codepipeline.PipelineExecutionId}",
+                    "pDomain" : "${pDomain}",
+                    "pCentralCatalog" : "${pCentralCatalog}",
+                    "pDomainAccountId" : "${pChildAccountId}",
+                    "pTeams" : "${pTeams}",
+                    "pRawBucket" : "${pOrg}-${pDomain}-${pEnvironment}-${AWS::Region}-${pChildAccountId}-raw",
+                    "pStageBucket" : "${pOrg}-${pDomain}-${pEnvironment}-${AWS::Region}-${pChildAccountId}-stage",
+                    "pAnalyticsBucket" : "${pOrg}-${pDomain}-${pEnvironment}-${AWS::Region}-${pChildAccountId}-analytics"
+                  }
+                Capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+              RunOrder: 1
+            - !If
+                - cCentralCatalog
+                - Name: CreateStackInChild
+                  RoleArn: !Sub arn:${AWS::Partition}:iam::${pChildAccountId}:role/sdlf-cicd-devops-crossaccount-pipeline
+                  ActionTypeId:
+                    Category: Deploy
+                    Owner: AWS
+                    Provider: CloudFormation
+                    Version: "1"
+                  InputArtifacts:
+                    - Name: SourceCatalogArtifact
+                  Configuration:
+                    ActionMode: CREATE_UPDATE
+                    RoleArn: !Sub arn:${AWS::Partition}:iam::${pChildAccountId}:role/sdlf-cicd-domain
+                    StackName: !Sub sdlf-catalog-permissions-${pDomain}-${pEnvironment}
+                    TemplatePath: "SourceCatalogArtifact::template-team-tag-permissions.yaml"
+                    TemplateConfiguration: "SourceCatalogArtifact::tags.json"
+                    ParameterOverrides: !Sub |
+                      {
+                        "pPipelineReference" : "#{codepipeline.PipelineExecutionId}",
+                        "pDomain" : "${pDomain}",
+                        "pCentralCatalog" : "${pCentralCatalog}",
+                        "pTeams" : "${pTeams}"
+                      }
+                    Capabilities: CAPABILITY_AUTO_EXPAND
+                  RunOrder: 2
+                - !Ref AWS::NoValue
       ArtifactStore:
         Type: S3
         Location: !Ref pArtifactsBucket

@@ -10,15 +10,28 @@ Parameters:
     Description: The KMS key used by CodeBuild and CodePipeline
     Type: AWS::SSM::Parameter::Value<String>
     Default: /SDLF/KMS/CICDKeyId
+  pOrg:
+    Description: Name of the organization owning the datalake (all lowercase, no symbols or spaces)
+    Type: String
+    AllowedPattern: "[a-z0-9]{2,9}"
   pDomain:
     Description: Name of the data domain (all lowercase, no symbols or spaces)
     Type: String
     AllowedPattern: "[a-z0-9]{2,9}"
+  pCentralCatalog:
+    Description: Catalog AWS account ID
+    Type: String
+    AllowedPattern: (\d{12}|^$)
+    ConstraintDescription: Must be an AWS account ID
+    Default: "000000000000"
   pTeamName:
     Description: Team name
     Type: String
   pCrossAccountTeamRole:
     Description: Team-specific cross-account role used to deploy stacks
+    Type: String
+  pCrossAccountCentralCatalogTeamRole:
+    Description: Team-specific cross-account role used to deploy stacks in the central catalog account
     Type: String
   pChildAccountId:
     Description: Child AWS account ID
@@ -95,6 +108,7 @@ Conditions:
   EnableLambdaLayerBuilder: !Equals [!Ref pEnableLambdaLayerBuilder, true]
   EnableGlueJobDeployer: !Equals [!Ref pEnableGlueJobDeployer, true]
   EnableOptionalFeatures: !Or [!Condition EnableLambdaLayerBuilder, !Condition EnableGlueJobDeployer]
+  cCentralCatalog: !Not [!Equals [!Ref pCentralCatalog, "000000000000"]]
 
 Resources:
   ######## CODEPIPELINE #########
@@ -174,6 +188,10 @@ Resources:
                 Action: sts:AssumeRole
                 Resource:
                   - !Sub arn:${AWS::Partition}:iam::${pChildAccountId}:role/sdlf-cicd-devops-crossaccount-pipeline
+                  - !If
+                    - cCentralCatalog
+                    - !Sub arn:${AWS::Partition}:iam::${pCentralCatalog}:role/sdlf-cicd-devops-crossaccount-pipeline
+                    - !Ref AWS::NoValue
 
   rTeamCodePipeline:
     Type: AWS::CodePipeline::Pipeline
@@ -469,6 +487,28 @@ Resources:
                    {"name":"TEAM_NAME", "value":"${pSdlfModuleTeam}", "type":"PLAINTEXT"},
                    {"name":"MODULE_NAME", "value":"stageB", "type":"PLAINTEXT"}]
               RunOrder: 1
+            - !If
+                - cCentralCatalog
+                - Name: BuildDatasetInCatalog
+                  InputArtifacts:
+                  - Name: SourceCicdArtifact
+                  - Name: SourceDatasetArtifact
+                  ActionTypeId:
+                    Category: Build
+                    Owner: AWS
+                    Version: "1"
+                    Provider: CodeBuild
+                  Configuration:
+                    PrimarySource: SourceDatasetArtifact
+                    ProjectName: !Ref pBuildCloudformationModuleStage
+                    EnvironmentVariables: !Sub >-
+                      [{"name":"ENVIRONMENT", "value":"${pEnvironment}", "type":"PLAINTEXT"},
+                      {"name":"DOMAIN_NAME", "value":"${pSdlfModuleDomain}", "type":"PLAINTEXT"},
+                      {"name":"DOMAIN_ACCOUNT_ID", "value":"${pCentralCatalog}", "type":"PLAINTEXT"},
+                      {"name":"TEAM_NAME", "value":"${pSdlfModuleTeam}", "type":"PLAINTEXT"},
+                      {"name":"MODULE_NAME", "value":"dataset", "type":"PLAINTEXT"}]
+                  RunOrder: 1
+                - !Ref AWS::NoValue
             -
               Name: BuildDataset
               InputArtifacts:
@@ -552,6 +592,33 @@ Resources:
               RunOrder: 1
         - Name: DeployDatasetsInfrastructure
           Actions:
+            - !If
+                - cCentralCatalog
+                - Name: CreateStackInCatalog
+                  RoleArn: !Sub arn:${AWS::Partition}:iam::${pCentralCatalog}:role/sdlf-cicd-devops-crossaccount-pipeline
+                  ActionTypeId:
+                    Category: Deploy
+                    Owner: AWS
+                    Provider: CloudFormation
+                    Version: "1"
+                  InputArtifacts:
+                    - Name: TemplateSource
+                  Configuration:
+                    ActionMode: CREATE_UPDATE
+                    RoleArn: !Ref pCrossAccountCentralCatalogTeamRole
+                    StackName: !Sub sdlf-${pDomain}-${pTeamName}-datasets-${pEnvironment}
+                    TemplatePath: "TemplateSource::datasets.yaml"
+                    TemplateConfiguration: "TemplateSource::tags.json"
+                    ParameterOverrides: !Sub |
+                      {
+                        "pPipelineReference" : "#{codepipeline.PipelineExecutionId}",
+                        "pOrg" : "${pOrg}",
+                        "pDomain" : "${pDomain}",
+                        "pEnvironment" : "${pEnvironment}"
+                      }
+                    Capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+                  RunOrder: 1
+                - !Ref AWS::NoValue
             - Name: CreateStack
               RoleArn: !Sub arn:${AWS::Partition}:iam::${pChildAccountId}:role/sdlf-cicd-devops-crossaccount-pipeline
               ActionTypeId:
@@ -567,12 +634,18 @@ Resources:
                 StackName: !Sub sdlf-${pTeamName}-datasets-${pEnvironment}
                 TemplatePath: "TemplateSource::datasets.yaml"
                 TemplateConfiguration: "TemplateSource::tags.json"
-                ParameterOverrides: |
+                ParameterOverrides: !Sub |
                   {
-                    "pPipelineReference" : "#{codepipeline.PipelineExecutionId}"
+                    "pPipelineReference" : "#{codepipeline.PipelineExecutionId}",
+                    "pOrg" : "${pOrg}",
+                    "pDomain" : "${pDomain}",
+                    "pEnvironment" : "${pEnvironment}"
                   }
                 Capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-              RunOrder: 1
+              RunOrder: !If
+                - cCentralCatalog
+                - 2
+                - 1
       ArtifactStore:
         Type: S3
         Location: !Ref pArtifactsBucket

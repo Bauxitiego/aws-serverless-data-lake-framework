@@ -109,6 +109,7 @@ Resources:
                 Resource:
                   - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/sdlf-cfn-module-*"
                   - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/sdlf-lambdalayers-*"
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/sdlf-catalog-*
                   - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/sdlf-domain-*
                   - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/sdlf-cicd-team-role-*
                   - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/sdlf-*-pipelines-*
@@ -255,6 +256,8 @@ Resources:
                 - cloudformation.amazonaws.com
             Action:
               - sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AWSLakeFormationCrossAccountManager
       Policies:
         - PolicyName: root
           PolicyDocument:
@@ -298,6 +301,7 @@ Resources:
                   - cloudformation:GetTemplateSummary
                 Resource:
                   - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/sdlf-*
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws:transform/LanguageExtensions
               - Effect: Allow
                 Action:
                   - cloudformation:ListStacks # W11 exception
@@ -336,7 +340,9 @@ Resources:
                   - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/sdlf-*
               - Effect: Allow
                 Action: iam:PassRole
-                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/sdlf-domain-*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/sdlf-domain-*
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/sdlf-catalog-*
                 Condition:
                   StringEquals:
                     "iam:PassedToService":
@@ -369,6 +375,9 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/sdlf-domain-*
                   - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/sdlf-*/sdlf-domain-*
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/sdlf-catalog-*
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/sdlf-*/sdlf-*-gluecrawler
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/sdlf-*-gluecrawler
               - Effect: Allow
                 Action:
                   - iam:ListPolicies # W11 exception
