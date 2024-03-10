@@ -69,9 +69,8 @@ Resources:
                   - kms:GenerateDataKey*
                   - kms:ReEncrypt*
                 Resource:
-                  - !Sub "{{resolve:ssm:/SDLF/KMS/${pTeamName}/InfraKeyId}}"
-                  - !Sub "{{resolve:ssm:/SDLF/KMS/${pTeamName}/DataKeyId}}"
-                  - "{{resolve:ssm:/SDLF/KMS/KeyArn}}"
+                  - "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
+                  - "{{resolve:ssm:/SDLF/KMS/DataKeyArn}}"
 
   rGlueConnection:
     Type: AWS::Glue::Connection

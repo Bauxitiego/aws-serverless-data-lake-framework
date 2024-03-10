@@ -15,10 +15,14 @@ Parameters:
     Description: Data domain name
     Type: String
     Default: "{{resolve:ssm:/SDLF/Misc/pDomain}}"
-  pDatasetBucket:
+  pRawBucket:
     Description: The raw or central bucket for the solution
     Type: String
-    Default: "{{resolve:ssm:/SDLF/S3/CentralBucket}}"
+    Default: "{{resolve:ssm:/SDLF/S3/RawBucket}}"
+  pStageBucket:
+    Description: The stage bucket for the solution
+    Type: String
+    Default: "{{resolve:ssm:/SDLF/S3/StageBucket}}"
   pTeamName:
     Description: Name of the team owning the pipeline (all lowercase, no symbols or spaces)
     Type: String
@@ -116,7 +120,7 @@ Globals:
     Handler: lambda_function.lambda_handler
     Layers:
       - "{{resolve:ssm:/SDLF/Lambda/LatestDatalakeLibraryLayer}}"
-    KmsKeyArn: !Sub "{{resolve:ssm:/SDLF/KMS/${pTeamName}/InfraKeyId}}"
+    KmsKeyArn: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
     VpcConfig: !If
       - RunInVpc
       - SecurityGroupIds: !Split [",", !Ref pVpcSecurityGroupIds]
@@ -173,7 +177,7 @@ Resources:
               - dynamodb:Scan
               - dynamodb:UpdateItem
             Resource:
-              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/octagon-*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/sdlf-*
           - Effect: Allow
             Action:
               - kms:CreateGrant
@@ -183,7 +187,7 @@ Resources:
               - kms:GenerateDataKey*
               - kms:ReEncrypt*
             Resource:
-              - !Sub "{{resolve:ssm:/SDLF/KMS/${pTeamName}/InfraKeyId}}"
+              - "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
 
   # Routing Step Role
   rRoleLambdaExecutionRoutingStep:
@@ -277,14 +281,14 @@ Resources:
                 Action:
                   - s3:ListBucket
                 Resource:
-                  - !Sub arn:${AWS::Partition}:s3:::${pDatasetBucket}
+                  - !Sub arn:${AWS::Partition}:s3:::${pRawBucket}
               - Effect: Allow
                 Action:
                   - s3:GetObject
                 Resource:
-                  - !Sub arn:${AWS::Partition}:s3:::${pDatasetBucket}/${pTeamName}/*
-                  - !Sub arn:${AWS::Partition}:s3:::${pDatasetBucket}/pre-stage/${pTeamName}/*
-                  - !Sub arn:${AWS::Partition}:s3:::${pDatasetBucket}/post-stage/${pTeamName}/*
+                  - !Sub arn:${AWS::Partition}:s3:::${pRawBucket}/${pTeamName}/*
+                  - !Sub arn:${AWS::Partition}:s3:::${pStageBucket}/pre-stage/${pTeamName}/*
+                  - !Sub arn:${AWS::Partition}:s3:::${pStageBucket}/post-stage/${pTeamName}/*
 
   # Error Handling Lambda Role
   rRoleLambdaExecutionErrorStep:
@@ -421,7 +425,7 @@ Resources:
     Properties:
       LogGroupName: !Sub /aws/lambda/${rLambdaRoutingStep}
       RetentionInDays: !Ref pCloudWatchLogsRetentionInDays
-      KmsKeyId: !Sub "{{resolve:ssm:/SDLF/KMS/${pTeamName}/InfraKeyId}}"
+      KmsKeyId: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
 
   rUpdateSubscriptionFilterRoutingStep:
     Type: AWS::Logs::SubscriptionFilter
@@ -457,7 +461,7 @@ Resources:
     Properties:
       LogGroupName: !Sub /aws/lambda/${rLambdaRedriveStep}
       RetentionInDays: !Ref pCloudWatchLogsRetentionInDays
-      KmsKeyId: !Sub "{{resolve:ssm:/SDLF/KMS/${pTeamName}/InfraKeyId}}"
+      KmsKeyId: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
 
   rUpdateSubscriptionFilterRedriveStep:
     Type: AWS::Logs::SubscriptionFilter
@@ -475,7 +479,7 @@ Resources:
     Properties:
       LogGroupName: !Sub /aws/lambda/${rLambdaStep1}
       RetentionInDays: !Ref pCloudWatchLogsRetentionInDays
-      KmsKeyId: !Sub "{{resolve:ssm:/SDLF/KMS/${pTeamName}/InfraKeyId}}"
+      KmsKeyId: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
 
   rUpdateSubscriptionFilterStep1:
     Type: AWS::Logs::SubscriptionFilter
@@ -493,7 +497,7 @@ Resources:
     Properties:
       LogGroupName: !Sub /aws/lambda/${rLambdaStep3}
       RetentionInDays: !Ref pCloudWatchLogsRetentionInDays
-      KmsKeyId: !Sub "{{resolve:ssm:/SDLF/KMS/${pTeamName}/InfraKeyId}}"
+      KmsKeyId: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
 
   rUpdateSubscriptionFilterStep3:
     Type: AWS::Logs::SubscriptionFilter
@@ -511,7 +515,7 @@ Resources:
     Properties:
       LogGroupName: !Sub /aws/lambda/${rLambdaErrorStep}
       RetentionInDays: !Ref pCloudWatchLogsRetentionInDays
-      KmsKeyId: !Sub "{{resolve:ssm:/SDLF/KMS/${pTeamName}/InfraKeyId}}"
+      KmsKeyId: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
 
   rUpdateSubscriptionFilterErrorStep:
     Type: AWS::Logs::SubscriptionFilter

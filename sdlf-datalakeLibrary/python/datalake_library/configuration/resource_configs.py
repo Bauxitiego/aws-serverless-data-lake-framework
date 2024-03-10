@@ -223,5 +223,5 @@ class KMSConfiguration(BaseConfig):
     @property
     def get_kms_arn(self):
         if not self._kms_arn:
-            self._kms_arn = self._get_ssm_param("/SDLF/KMS/{}/DataKeyId".format(self._team))
+            self._kms_arn = self._get_ssm_param("/SDLF/KMS/DataKeyArn")
         return self._kms_arn

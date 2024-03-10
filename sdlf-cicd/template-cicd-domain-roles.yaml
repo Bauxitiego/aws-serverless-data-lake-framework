@@ -320,7 +320,7 @@ Resources:
                   - dynamodb:UpdateTimeToLive
                   - dynamodb:DescribeContinuousBackups
                   - dynamodb:UpdateContinuousBackups
-                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/octagon-*
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/sdlf-*
               - Effect: Allow
                 Action:
                   - events:DeleteRule
@@ -752,6 +752,15 @@ Resources:
                 StringEquals:
                   "iam:PassedToService":
                     - cloudformation.amazonaws.com
+
+  rDataLakeSettings:
+    Type: AWS::LakeFormation::DataLakeSettings
+    Properties:
+      Admins:
+        - DataLakePrincipalIdentifier: !GetAtt rDomainCloudFormationRole.Arn
+      CreateDatabaseDefaultPermissions: []
+      CreateTableDefaultPermissions: []
+      MutationType: REPLACE
 
 Outputs:
   # workaround {{resolve:ssm:}} not returning an array that can be used directly in VpcConfig blocks

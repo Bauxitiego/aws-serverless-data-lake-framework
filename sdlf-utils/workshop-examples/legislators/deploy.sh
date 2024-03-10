@@ -65,7 +65,7 @@ function send_legislators()
   
   CENTRAL_BUCKET=$(aws --region "$REGION" --profile "$PROFILE" ssm get-parameter --name /SDLF/S3/CentralBucket --query "Parameter.Value" --output text)
   STAGE_BUCKET=$(aws --region "$REGION" --profile "$PROFILE" ssm get-parameter --name /SDLF/S3/StageBucket --query "Parameter.Value" --output text)
-  KMS_KEY=$(aws --region "$REGION" --profile "$PROFILE" ssm get-parameter --name /SDLF/KMS/$TEAM_NAME/DataKeyId --query "Parameter.Value" --output text)
+  KMS_KEY=$(aws --region "$REGION" --profile "$PROFILE" ssm get-parameter --name /SDLF/KMS/DataKeyArn --query "Parameter.Value" --output text)
 
   S3_DESTINATION=s3://$CENTRAL_BUCKET/
   COUNT=0

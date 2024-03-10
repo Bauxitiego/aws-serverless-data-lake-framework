@@ -79,7 +79,7 @@ Resources:
         maxReceiveCount: 1
       VisibilityTimeout: 60
       MessageRetentionPeriod: 604800
-      KmsMasterKeyId: !Sub "{{resolve:ssm:/SDLF/KMS/${pTeamName}/InfraKeyId}}"
+      KmsMasterKeyId: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
 
   rDeadLetterQueueRoutingStep:
     Type: AWS::SQS::Queue
@@ -90,7 +90,7 @@ Resources:
       FifoQueue: True
       MessageRetentionPeriod: 1209600
       VisibilityTimeout: 60
-      KmsMasterKeyId: !Sub "{{resolve:ssm:/SDLF/KMS/${pTeamName}/InfraKeyId}}"
+      KmsMasterKeyId: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
 
   rQueuePolicyEventsStageRule:
     Type: AWS::SQS::QueuePolicy
@@ -149,7 +149,7 @@ Resources:
                 Action:
                   - kms:Decrypt
                 Resource:
-                  - !Sub "{{resolve:ssm:/SDLF/KMS/${pTeamName}/InfraKeyId}}"
+                  - "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
 
   rPostStateSchedule:
     Type: AWS::Scheduler::Schedule
@@ -157,7 +157,7 @@ Resources:
     Properties:
       Description: !Sub Trigger ${pStageName} Routing Lambda on a specified schedule
       GroupName: !Sub "{{resolve:ssm:/SDLF/EventBridge/${pTeamName}/ScheduleGroupName}}"
-      KmsKeyArn: !Sub "{{resolve:ssm:/SDLF/KMS/${pTeamName}/InfraKeyId}}"
+      KmsKeyArn: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
       Name: !Sub sdlf-${pTeamName}-${pPipelineName}-schedule-rule-${pStageName}
       ScheduleExpression: !Ref pSchedule
       FlexibleTimeWindow:

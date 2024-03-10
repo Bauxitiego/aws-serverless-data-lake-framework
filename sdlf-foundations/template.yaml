@@ -77,13 +77,12 @@ Parameters:
 Conditions:
   UseCustomBucketPrefix: !Not [!Equals [!Ref pCustomBucketPrefix, sdlf]]
   RunInVpc: !Equals [!Ref pEnableVpc, true]
-  cCentralCatalog: !Not [!Equals [!Ref pCentralCatalog, "000000000000"]]
 
 Globals:
   Function:
     Runtime: python3.12
     Handler: lambda_function.lambda_handler
-    KmsKeyArn: !GetAtt rKMSKey.Arn
+    KmsKeyArn: !GetAtt rKmsInfraKey.Arn
     VpcConfig: !If
       - RunInVpc
       - SecurityGroupIds: !Split [",", !Ref pVpcSecurityGroupIds]
@@ -142,7 +141,7 @@ Resources:
                   - dynamodb:Scan
                   - dynamodb:UpdateItem
                 Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/octagon-*
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/sdlf-*
               - Sid: SSMAccess
                 Effect: Allow
                 Action:
@@ -152,23 +151,11 @@ Resources:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/IAM/DataLakeAdminRoleArn
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/Dynamo/DataSchemas
 
-  ######## LAKE FORMATION #########
-  rDataLakeSettings:
-    Type: AWS::LakeFormation::DataLakeSettings
-    Properties:
-      Admins:
-        - DataLakePrincipalIdentifier: !GetAtt rDataLakeAdminRole.Arn
-        - DataLakePrincipalIdentifier: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/sdlf-cicd-domain
-      CreateDatabaseDefaultPermissions: []
-      CreateTableDefaultPermissions: []
-      MutationType: REPLACE
-
   rLakeFormationDataAccessRole: # https://docs.aws.amazon.com/lake-formation/latest/dg/registration-role.html
     Type: AWS::IAM::Role
-#    Condition: cCentralCatalog
     Properties:
       AssumeRolePolicyDocument:
-        Version: 2012-10-17
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
@@ -190,22 +177,85 @@ Resources:
                 - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws-lakeformation-acceleration/*"
                 - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws-lakeformation-acceleration/*:log-stream:*"
 
+  rLakeFormationDataAccessRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: sdlf-lakeformation
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetObject*
+              - s3:GetBucket*
+              - s3:List*
+              - s3:DeleteObject*
+              - s3:PutObject
+              - s3:PutObjectLegalHold
+              - s3:PutObjectRetention
+              - s3:PutObjectTagging
+              - s3:PutObjectVersionTagging
+              - s3:Abort*
+            Resource:
+              - !Sub "arn:${AWS::Partition}:s3:::${rRawBucket}"
+              - !Sub "arn:${AWS::Partition}:s3:::${rStageBucket}"
+              - !Sub "arn:${AWS::Partition}:s3:::${rAnalyticsBucket}"
+              - !Sub "arn:${AWS::Partition}:s3:::${rRawBucket}/*"
+              - !Sub "arn:${AWS::Partition}:s3:::${rStageBucket}/*"
+              - !Sub "arn:${AWS::Partition}:s3:::${rAnalyticsBucket}/*"
+          - Effect: Allow
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource:
+              - !GetAtt rKmsInfraKey.Arn
+              - !GetAtt rKmsDataKey.Arn
+      Roles:
+        - !Ref rLakeFormationDataAccessRole
+
+  rDataLakeAdminRoleSsm:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /SDLF/IAM/DataLakeAdminRoleArn
+      Type: String
+      Value: !GetAtt rDataLakeAdminRole.Arn
+      Description: Lake Formation Data Lake Admin Role
+
+  rLakeFormationDataAccessRoleSsm:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /SDLF/IAM/LakeFormationDataAccessRoleArn
+      Type: String
+      Value: !GetAtt rLakeFormationDataAccessRole.Arn
+      Description: Lake Formation Data Access Role
+
+  rLakeFormationDataAccessRoleNameSsm:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /SDLF/IAM/LakeFormationDataAccessRole
+      Type: String
+      Value: !Ref rLakeFormationDataAccessRole
+      Description: Lake Formation Data Access Role
+
   ######## KMS #########
-  rKMSKey:
+  rKmsInfraKey:
     Type: AWS::KMS::Key
-    DeletionPolicy: RetainExceptOnCreate
     UpdateReplacePolicy: Retain
+    DeletionPolicy: RetainExceptOnCreate
     Metadata:
       cfn_nag:
         rules_to_suppress:
           - id: F76
             reason: Full access is allowed to Key admin and some AWS services
     Properties:
-      Description: SDLF Foundations KMS Key
+      Description: !Sub SDLF ${pDomain} Infrastructure KMS Key
       EnableKeyRotation: True
       KeyPolicy:
-        Version: 2012-10-17
-        Id: sdlf-key-default-policy
+        Version: "2012-10-17"
+        Id: !Sub sdlf-${pDomain}-infra-key-policy
         Statement:
           - Sid: Allow administration of the key
             Effect: Allow
@@ -219,6 +269,7 @@ Resources:
               Service:
                 - cloudtrail.amazonaws.com
                 - cloudwatch.amazonaws.com
+                - events.amazonaws.com
             Action:
               - kms:Decrypt
               - kms:GenerateDataKey*
@@ -226,7 +277,8 @@ Resources:
           - Sid: Allow logs access
             Effect: Allow
             Principal:
-              Service: !Sub logs.${AWS::Region}.amazonaws.com
+              Service:
+                - !Sub logs.${AWS::Region}.amazonaws.com
             Action:
               - kms:CreateGrant
               - kms:Decrypt
@@ -247,14 +299,6 @@ Resources:
               StringEquals:
                 kms:CallerAccount: !Ref AWS::AccountId
                 kms:ViaService: !Sub sns.${AWS::Region}.amazonaws.com
-          - Sid: Allow S3 Events access
-            Effect: Allow
-            Principal:
-              Service: s3.amazonaws.com
-            Action:
-              - kms:Decrypt
-              - kms:GenerateDataKey
-            Resource: "*"
           - Sid: Allow DynamoDB access
             Effect: Allow
             Principal:
@@ -301,41 +345,68 @@ Resources:
               - kms:Describe*
             Resource: "*"
 
-  rKMSKeyAlias:
+  rKmsInfraKeyAlias:
     Type: AWS::KMS::Alias
     UpdateReplacePolicy: Retain
     DeletionPolicy: RetainExceptOnCreate
     Properties:
-      AliasName: alias/sdlf-kms-key
-      TargetKeyId: !Ref rKMSKey
+      AliasName: !Sub alias/sdlf-${pDomain}-kms-infra-key
+      TargetKeyId: !Ref rKmsInfraKey
 
-  ######## SSM #########
-  rKMSKeySsm:
+  rKmsInfraKeySsm:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /SDLF/KMS/KeyArn
+      Name: /SDLF/KMS/InfraKeyArn
       Type: String
-      Value: !GetAtt rKMSKey.Arn
-      Description: Arn of the KMS key
+      Value: !GetAtt rKmsInfraKey.Arn
+      Description: !Sub ARN of the ${pDomain} KMS infrastructure key
 
-  rLakeFormationDataAccessRoleSsm:
+  rKmsDataKey:
+    Type: AWS::KMS::Key
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: RetainExceptOnCreate
+    Properties:
+      Description: !Sub SDLF ${pDomain} Data KMS Key
+      EnableKeyRotation: True
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: !Sub sdlf-${pDomain}-data-key-policy
+        Statement:
+          - Sid: Allow administration of the key
+            Action: kms:*
+            Effect: Allow
+            Principal:
+              AWS: [!Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"]
+            Resource: "*"
+          - Sid: Allow Lake Formation permissions
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt rDataLakeAdminRole.Arn
+            Resource: "*"
+
+  rKmsDataKeyAlias:
+    Type: AWS::KMS::Alias
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: RetainExceptOnCreate
+    Properties:
+      AliasName: !Sub alias/sdlf-${pDomain}-kms-data-key
+      TargetKeyId: !Ref rKmsDataKey
+
+  rKmsDataKeySsm:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /SDLF/IAM/LakeFormationDataAccessRoleArn
+      Name: !Sub /SDLF/KMS/DataKeyArn
       Type: String
-      Value: !GetAtt rLakeFormationDataAccessRole.Arn
-      Description: Lake Formation Data Access Role
-
-  rLakeFormationDataAccessRoleNameSsm:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /SDLF/IAM/LakeFormationDataAccessRole
-      Type: String
-      Value: !Ref rLakeFormationDataAccessRole
-      Description: Lake Formation Data Access Role
+      Value: !GetAtt rKmsDataKey.Arn
+      Description: !Sub ARN of the ${pDomain} KMS data key
 
   ######## S3 #########
-  ####### Access Logging Bucket ######
   rS3AccessLogsBucket:
     Type: AWS::S3::Bucket
     Metadata:
@@ -365,7 +436,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - BucketKeyEnabled: True
             ServerSideEncryptionByDefault:
-              KMSMasterKeyID: !Ref rKMSKey
+              KMSMasterKeyID: !Ref rKmsDataKey
               SSEAlgorithm: aws:kms
       PublicAccessBlockConfiguration:
         BlockPublicAcls: True
@@ -378,7 +449,7 @@ Resources:
     Properties:
       Bucket: !Ref rS3AccessLogsBucket
       PolicyDocument:
-        Version: 2012-10-17
+        Version: "2012-10-17"
         Statement:
           - Action:
               - s3:PutObject
@@ -398,54 +469,9 @@ Resources:
               StringEquals:
                 "aws:SourceAccount": !Sub ${AWS::AccountId}
 
-  ####### S3 Buckets #########
-  rLakeFormationDataAccessRolePolicy:
-    Type: AWS::IAM::Policy
-    Metadata:
-      cfn_nag:
-        rules_to_suppress:
-          - id: W12
-            reason: Condition Applied to restrict access, and the KMS keys do not exist at this stage
-    Properties:
-      PolicyName: sdlf-lakeformation
-      PolicyDocument:
-        Version: 2012-10-17
-        Statement:
-          - Effect: Allow
-            Action:
-              - s3:GetObject*
-              - s3:GetBucket*
-              - s3:List*
-              - s3:DeleteObject*
-              - s3:PutObject
-              - s3:PutObjectLegalHold
-              - s3:PutObjectRetention
-              - s3:PutObjectTagging
-              - s3:PutObjectVersionTagging
-              - s3:Abort*
-            Resource:
-              - !Sub "arn:${AWS::Partition}:s3:::${rRawBucket}"
-              - !Sub "arn:${AWS::Partition}:s3:::${rStageBucket}"
-              - !Sub "arn:${AWS::Partition}:s3:::${rAnalyticsBucket}"
-              - !Sub "arn:${AWS::Partition}:s3:::${rRawBucket}/*"
-              - !Sub "arn:${AWS::Partition}:s3:::${rStageBucket}/*"
-              - !Sub "arn:${AWS::Partition}:s3:::${rAnalyticsBucket}/*"
-          - Effect: Allow
-            Action:
-              - kms:Encrypt*
-              - kms:Decrypt*
-              - kms:ReEncrypt*
-              - kms:GenerateDataKey*
-              - kms:Describe*
-            Resource: "*"
-            Condition:
-              "ForAnyValue:StringLike":
-                "kms:ResourceAliases":
-                  - alias/sdlf-kms-key
-                  - alias/sdlf-*-kms-data-key
-      Roles:
-        - !Ref rLakeFormationDataAccessRole
+  # To Enforce KMS encryption: https://aws.amazon.com/premiumsupport/knowledge-center/s3-bucket-store-kms-encrypted-objects/
 
+  # store CloudFormation artifacts, and any other artifacts that might be created during the lifetime of the datalake
   rArtifactsBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -465,7 +491,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - BucketKeyEnabled: True
             ServerSideEncryptionByDefault:
-              KMSMasterKeyID: !Ref rKMSKey
+              KMSMasterKeyID: !Ref rKmsDataKey
               SSEAlgorithm: aws:kms
       PublicAccessBlockConfiguration:
         BlockPublicAcls: True
@@ -478,9 +504,9 @@ Resources:
     Properties:
       Bucket: !Ref rArtifactsBucket
       PolicyDocument:
-        Version: 2012-10-17
+        Version: "2012-10-17"
         Statement:
-          - Sid: AllowSSLRequestsOnly
+          - Sid: AllowTlsRequestsOnly
             Action: s3:*
             Effect: Deny
             Resource:
@@ -491,7 +517,6 @@ Resources:
                 aws:SecureTransport: False
             Principal: "*"
 
-  # To Enforce KMS encryption: https://aws.amazon.com/premiumsupport/knowledge-center/s3-bucket-store-kms-encrypted-objects/
   rRawBucket:
     Type: AWS::S3::Bucket
     DependsOn: rQueueCatalogPolicy
@@ -512,7 +537,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - BucketKeyEnabled: True
             ServerSideEncryptionByDefault:
-              KMSMasterKeyID: !Ref rKMSKey
+              KMSMasterKeyID: !Ref rKmsDataKey
               SSEAlgorithm: aws:kms
       PublicAccessBlockConfiguration:
         BlockPublicAcls: True
@@ -530,9 +555,9 @@ Resources:
     Properties:
       Bucket: !Ref rRawBucket
       PolicyDocument:
-        Version: 2012-10-17
+        Version: "2012-10-17"
         Statement:
-          - Sid: AllowSSLRequestsOnly
+          - Sid: AllowTlsRequestsOnly
             Action: s3:*
             Effect: Deny
             Resource:
@@ -542,15 +567,6 @@ Resources:
               Bool:
                 aws:SecureTransport: False
             Principal: "*"
-
-  rRawBucketLakeFormationS3Registration:
-    Type: AWS::LakeFormation::Resource
-    DependsOn: rLakeFormationDataAccessRolePolicy
-    Condition: cCentralCatalog
-    Properties:
-      ResourceArn: !Sub arn:${AWS::Partition}:s3:::${rRawBucket}/
-      RoleArn: !GetAtt rLakeFormationDataAccessRole.Arn
-      UseServiceLinkedRole: False
 
   rStageBucket:
     Type: AWS::S3::Bucket
@@ -572,7 +588,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - BucketKeyEnabled: True
             ServerSideEncryptionByDefault:
-              KMSMasterKeyID: !Ref rKMSKey
+              KMSMasterKeyID: !Ref rKmsDataKey
               SSEAlgorithm: aws:kms
       PublicAccessBlockConfiguration:
         BlockPublicAcls: True
@@ -590,9 +606,9 @@ Resources:
     Properties:
       Bucket: !Ref rStageBucket
       PolicyDocument:
-        Version: 2012-10-17
+        Version: "2012-10-17"
         Statement:
-          - Sid: AllowSSLRequestsOnly
+          - Sid: AllowTlsRequestsOnly
             Action: s3:*
             Effect: Deny
             Resource:
@@ -602,15 +618,6 @@ Resources:
               Bool:
                 aws:SecureTransport: False
             Principal: "*"
-
-  rStageBucketLakeFormationS3Registration:
-    Type: AWS::LakeFormation::Resource
-    DependsOn: rLakeFormationDataAccessRolePolicy
-    Condition: cCentralCatalog
-    Properties:
-      ResourceArn: !Sub arn:${AWS::Partition}:s3:::${rStageBucket}/
-      RoleArn: !GetAtt rLakeFormationDataAccessRole.Arn
-      UseServiceLinkedRole: False
 
   rAnalyticsBucket:
     Type: AWS::S3::Bucket
@@ -632,7 +639,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - BucketKeyEnabled: True
             ServerSideEncryptionByDefault:
-              KMSMasterKeyID: !Ref rKMSKey
+              KMSMasterKeyID: !Ref rKmsDataKey
               SSEAlgorithm: aws:kms
       PublicAccessBlockConfiguration:
         BlockPublicAcls: True
@@ -650,9 +657,9 @@ Resources:
     Properties:
       Bucket: !Ref rAnalyticsBucket
       PolicyDocument:
-        Version: 2012-10-17
+        Version: "2012-10-17"
         Statement:
-          - Sid: AllowSSLRequestsOnly
+          - Sid: AllowTlsRequestsOnly
             Action: s3:*
             Effect: Deny
             Resource:
@@ -662,15 +669,6 @@ Resources:
               Bool:
                 aws:SecureTransport: False
             Principal: "*"
-
-  rAnalyticsBucketLakeFormationS3Registration:
-    Type: AWS::LakeFormation::Resource
-    DependsOn: rLakeFormationDataAccessRolePolicy
-    Condition: cCentralCatalog
-    Properties:
-      ResourceArn: !Sub arn:${AWS::Partition}:s3:::${rAnalyticsBucket}/
-      RoleArn: !GetAtt rLakeFormationDataAccessRole.Arn
-      UseServiceLinkedRole: False
 
   rAthenaBucket:
     Type: AWS::S3::Bucket
@@ -691,7 +689,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - BucketKeyEnabled: True
             ServerSideEncryptionByDefault:
-              KMSMasterKeyID: !Ref rKMSKey
+              KMSMasterKeyID: !Ref rKmsDataKey
               SSEAlgorithm: aws:kms
       PublicAccessBlockConfiguration:
         BlockPublicAcls: True
@@ -704,9 +702,9 @@ Resources:
     Properties:
       Bucket: !Ref rAthenaBucket
       PolicyDocument:
-        Version: 2012-10-17
+        Version: "2012-10-17"
         Statement:
-          - Sid: AllowSSLRequestsOnly
+          - Sid: AllowTlsRequestsOnly
             Action: s3:*
             Effect: Deny
             Resource:
@@ -717,249 +715,74 @@ Resources:
                 aws:SecureTransport: False
             Principal: "*"
 
-  ######## Lambda & SQS #########
-  rQueueCatalog:
-    Type: AWS::SQS::Queue
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
+  rS3AccessLogsBucketSsm:
+    Type: AWS::SSM::Parameter
     Properties:
-      QueueName: sdlf-catalog-queue
-      RedrivePolicy:
-        deadLetterTargetArn: !GetAtt rDeadLetterQueueCatalog.Arn
-        maxReceiveCount: 1
-      VisibilityTimeout: 60
-      MessageRetentionPeriod: 604800
-      KmsMasterKeyId: !GetAtt rKMSKey.Arn
+      Name: !Sub /SDLF/S3/AccessLogsBucket
+      Type: String
+      Value: !Ref rS3AccessLogsBucket
+      Description: S3 Access Logs Bucket
 
-  rDeadLetterQueueCatalog:
-    Type: AWS::SQS::Queue
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
-    Properties:
-      QueueName: sdlf-catalog-dlq
-      MessageRetentionPeriod: 1209600
-      VisibilityTimeout: 60
-      KmsMasterKeyId: !GetAtt rKMSKey.Arn
-
-  rQueueLambdaCatalogEventSourceMapping:
-    Type: AWS::Lambda::EventSourceMapping
-    Properties:
-      BatchSize: 10
-      Enabled: True
-      EventSourceArn: !GetAtt rQueueCatalog.Arn
-      FunctionName: !GetAtt rLambdaCatalog.Arn
-
-  rLambdaCatalog:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: ./lambda/catalog/src
-      FunctionName: sdlf-catalog
-      Environment:
-        Variables:
-          ENV: !Ref pEnvironment
-      Description: Catalogs S3 Put and Delete to ObjectMetaDataCatalog
-      MemorySize: 256
-      Timeout: 60
-      Role: !GetAtt rRoleLambdaExecution.Arn
-
-  rLambdaCatalogRedrive:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: ./lambda/catalog-redrive/src
-      FunctionName: sdlf-catalog-redrive
-      Environment:
-        Variables:
-          QUEUE: !GetAtt rQueueCatalog.QueueName
-          DLQ: !GetAtt rDeadLetterQueueCatalog.QueueName
-      Description: Redrives Failed S3 Put/Delete to Catalog Lambda
-      MemorySize: 256
-      Timeout: 60
-      Role: !GetAtt rRoleLambdaExecution.Arn
-
-  rLambdaCatalogRedriveLogGroup:
-    Type: AWS::Logs::LogGroup
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
-    Properties:
-      LogGroupName: !Sub /aws/lambda/${rLambdaCatalogRedrive}
-      RetentionInDays: !Ref pCloudWatchLogsRetentionInDays
-      KmsKeyId: !GetAtt rKMSKey.Arn
-
-  rQueueCatalogPolicy:
-    Type: AWS::SQS::QueuePolicy
-    Properties:
-      PolicyDocument:
-        Version: 2012-10-17
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: s3.amazonaws.com
-            Action:
-              - SQS:SendMessage
-            Resource: !GetAtt rQueueCatalog.Arn
-            Condition:
-              ArnEquals:
-                "aws:SourceArn":
-                  !If
-                    - UseCustomBucketPrefix
-                    - - !Sub "arn:${AWS::Partition}:s3:::${pCustomBucketPrefix}-raw"
-                      - !Sub "arn:${AWS::Partition}:s3:::${pCustomBucketPrefix}-stage"
-                      - !Sub "arn:${AWS::Partition}:s3:::${pCustomBucketPrefix}-analytics"
-                    - - !Sub "arn:${AWS::Partition}:s3:::${pOrg}-${pDomain}-${pEnvironment}-${AWS::Region}-${AWS::AccountId}-raw"
-                      - !Sub "arn:${AWS::Partition}:s3:::${pOrg}-${pDomain}-${pEnvironment}-${AWS::Region}-${AWS::AccountId}-stage"
-                      - !Sub "arn:${AWS::Partition}:s3:::${pOrg}-${pDomain}-${pEnvironment}-${AWS::Region}-${AWS::AccountId}-analytics"
-              StringEquals:
-                aws:SourceAccount: !Ref AWS::AccountId
-      Queues:
-        - !Ref rQueueCatalog
-
-  rRoleLambdaExecution:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: 2012-10-17
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - !If
-          - RunInVpc
-          - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
-          - !Ref "AWS::NoValue"
-      Policies:
-        - PolicyName: sdlf-catalog
-          PolicyDocument:
-            Version: 2012-10-17
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/sdlf-catalog*
-              - Effect: Allow
-                Action:
-                  - sqs:DeleteMessage
-                  - sqs:DeleteMessageBatch
-                  - sqs:GetQueueAttributes
-                  - sqs:GetQueueUrl
-                  - sqs:ListQueues
-                  - sqs:ListDeadLetterSourceQueues
-                  - sqs:ListQueueTags
-                  - sqs:ReceiveMessage
-                  - sqs:SendMessage
-                  - sqs:SendMessageBatch
-                Resource:
-                  - !GetAtt rQueueCatalog.Arn
-                  - !GetAtt rDeadLetterQueueCatalog.Arn
-              - Effect: Allow
-                Action:
-                  - dynamodb:BatchGetItem
-                  - dynamodb:BatchWriteItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:DescribeTable
-                  - dynamodb:GetItem
-                  - dynamodb:GetRecords
-                  - dynamodb:PutItem
-                  - dynamodb:Query
-                  - dynamodb:Scan
-                  - dynamodb:UpdateItem
-                Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/octagon-*
-              - Effect: Allow
-                Action:
-                  - kms:CreateGrant
-                  - kms:Decrypt
-                  - kms:DescribeKey
-                  - kms:Encrypt
-                  - kms:GenerateDataKey*
-                  - kms:ReEncrypt*
-                Resource: !GetAtt rKMSKey.Arn
-              - Effect: Allow
-                Action:
-                  - ssm:GetParameter
-                  - ssm:GetParameters
-                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/EventBridge/*
-
-  rS3ObjectTriggerRule:
-    Type: AWS::Events::Rule
-    Properties:
-      State: ENABLED
-      EventPattern:
-        source:
-          - aws.s3
-        detail-type:
-          - Object Created
-          - Object Deleted
-        detail:
-          bucket:
-            - !Ref rRawBucket
-            - !Ref rStageBucket
-            - !Ref rAnalyticsBucket
-      Targets:
-        - Arn: !GetAtt rQueueCatalog.Arn
-          RetryPolicy:
-            MaximumRetryAttempts: 3
-            MaximumEventAgeInSeconds: 600
-          DeadLetterConfig:
-            Arn: !GetAtt rDeadLetterQueueCatalog.Arn
-          Id: sdlf-catalog
-
-  ####### SSM #######
   rS3ArtifactBucketSsm:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /SDLF/S3/ArtifactsBucket
+      Name: !Sub /SDLF/S3/ArtifactsBucket
       Type: String
       Value: !Ref rArtifactsBucket
       Description: Name of the Artifacts S3 bucket
-  rS3CentralBucketSsm: # kept for backward compatibility
+
+  rS3CentralBucketSsm: # kept for backward compatibility (it is always the same as rS3RawBucketSsm)
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /SDLF/S3/CentralBucket
+      Name: !Sub /SDLF/S3/CentralBucket
       Type: String
       Value: !Ref rRawBucket
       Description: Name of the Central S3 bucket
+
   rS3RawBucketSsm:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /SDLF/S3/RawBucket
+      Name: !Sub /SDLF/S3/RawBucket
       Type: String
       Value: !Ref rRawBucket
       Description: Name of the Raw S3 bucket
+
   rS3StageBucketSsm:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /SDLF/S3/StageBucket
+      Name: !Sub /SDLF/S3/StageBucket
       Type: String
       Value: !Ref rStageBucket
       Description: Name of the Stage S3 bucket
+
   rS3AnalyticsBucketSsm:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /SDLF/S3/AnalyticsBucket
+      Name: !Sub /SDLF/S3/AnalyticsBucket
       Type: String
       Value: !Ref rAnalyticsBucket
       Description: Name of the Analytics S3 bucket
+
   rS3AthenaBucketSsm:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /SDLF/S3/AthenaBucket
+      Name: !Sub /SDLF/S3/AthenaBucket
       Type: String
       Value: !Ref rAthenaBucket
       Description: Name of the Athena results S3 bucket
 
   ######## DYNAMODB #########
-  rDynamoOctagonObjectMetadata:
+  rDynamoObjectMetadata: # tracking all objects in the datalake
     Type: AWS::DynamoDB::Table
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Delete
     Metadata:
       cfn_nag:
         rules_to_suppress:
           - id: W28
             reason: DynamoDB tables require specific names to be compatible with Octagon
     Properties:
+      TableName: !Sub sdlf-ObjectMetadata-${pEnvironment}
       AttributeDefinitions:
         - AttributeName: id
           AttributeType: S
@@ -967,26 +790,26 @@ Resources:
         - AttributeName: id
           KeyType: HASH
       BillingMode: PAY_PER_REQUEST
-      TableName: !Sub octagon-ObjectMetadata-${pEnvironment}
       StreamSpecification:
         StreamViewType: NEW_AND_OLD_IMAGES
       SSESpecification:
         SSEEnabled: True
         SSEType: KMS
-        KMSMasterKeyId: !GetAtt rKMSKey.Arn
+        KMSMasterKeyId: !GetAtt rKmsInfraKey.Arn
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: True
+
+  rDynamoDatasets:
+    Type: AWS::DynamoDB::Table
     UpdateReplacePolicy: Retain
     DeletionPolicy: Delete
-
-  rDynamoOctagonDatasets:
-    Type: AWS::DynamoDB::Table
     Metadata:
       cfn_nag:
         rules_to_suppress:
           - id: W28
             reason: DynamoDB tables require specific names to be compatible with Octagon
     Properties:
+      TableName: !Sub sdlf-Datasets-${pEnvironment}
       KeySchema:
         - AttributeName: name
           KeyType: HASH
@@ -994,24 +817,24 @@ Resources:
         - AttributeName: name
           AttributeType: S
       BillingMode: PAY_PER_REQUEST
-      TableName: !Sub octagon-Datasets-${pEnvironment}
       SSESpecification:
         SSEEnabled: True
         SSEType: KMS
-        KMSMasterKeyId: !GetAtt rKMSKey.Arn
+        KMSMasterKeyId: !GetAtt rKmsInfraKey.Arn
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: True
+
+  rDynamoArtifacts:
+    Type: AWS::DynamoDB::Table
     UpdateReplacePolicy: Retain
     DeletionPolicy: Delete
-
-  rDynamoOctagonArtifacts:
-    Type: AWS::DynamoDB::Table
     Metadata:
       cfn_nag:
         rules_to_suppress:
           - id: W28
             reason: DynamoDB tables require specific names to be compatible with Octagon
     Properties:
+      TableName: !Sub sdlf-Artifacts-${pEnvironment}
       KeySchema:
         - AttributeName: id
           KeyType: HASH
@@ -1068,27 +891,27 @@ Resources:
               KeyType: HASH
           Projection:
             ProjectionType: ALL
-      TableName: !Sub octagon-Artifacts-${pEnvironment}
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
       SSESpecification:
         SSEEnabled: True
         SSEType: KMS
-        KMSMasterKeyId: !GetAtt rKMSKey.Arn
+        KMSMasterKeyId: !GetAtt rKmsInfraKey.Arn
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: True
+
+  rDynamoMetrics:
+    Type: AWS::DynamoDB::Table
     UpdateReplacePolicy: Retain
     DeletionPolicy: Delete
-
-  rDynamoOctagonMetrics:
-    Type: AWS::DynamoDB::Table
     Metadata:
       cfn_nag:
         rules_to_suppress:
           - id: W28
             reason: DynamoDB tables require specific names to be compatible with Octagon
     Properties:
+      TableName: !Sub sdlf-Metrics-${pEnvironment}
       KeySchema:
         - AttributeName: root
           KeyType: HASH
@@ -1129,27 +952,27 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
-      TableName: !Sub octagon-Metrics-${pEnvironment}
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
       SSESpecification:
         SSEEnabled: True
         SSEType: KMS
-        KMSMasterKeyId: !GetAtt rKMSKey.Arn
+        KMSMasterKeyId: !GetAtt rKmsInfraKey.Arn
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: True
+
+  rDynamoConfiguration:
+    Type: AWS::DynamoDB::Table
     UpdateReplacePolicy: Retain
     DeletionPolicy: Delete
-
-  rDynamoOctagonConfiguration:
-    Type: AWS::DynamoDB::Table
     Metadata:
       cfn_nag:
         rules_to_suppress:
           - id: W28
             reason: DynamoDB tables require specific names to be compatible with Octagon
     Properties:
+      TableName: !Sub sdlf-Configuration-${pEnvironment}
       KeySchema:
         - AttributeName: key
           KeyType: HASH
@@ -1166,24 +989,24 @@ Resources:
               KeyType: HASH
           Projection:
             ProjectionType: ALL
-      TableName: !Sub octagon-Configuration-${pEnvironment}
       SSESpecification:
         SSEEnabled: True
         SSEType: KMS
-        KMSMasterKeyId: !GetAtt rKMSKey.Arn
+        KMSMasterKeyId: !GetAtt rKmsInfraKey.Arn
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: True
+
+  rDynamoTeams:
+    Type: AWS::DynamoDB::Table
     UpdateReplacePolicy: Retain
     DeletionPolicy: Delete
-
-  rDynamoOctagonTeams:
-    Type: AWS::DynamoDB::Table
     Metadata:
       cfn_nag:
         rules_to_suppress:
           - id: W28
             reason: DynamoDB tables require specific names to be compatible with Octagon
     Properties:
+      TableName: !Sub sdlf-Teams-${pEnvironment}
       KeySchema:
         - AttributeName: team
           KeyType: HASH
@@ -1191,24 +1014,24 @@ Resources:
         - AttributeName: team
           AttributeType: S
       BillingMode: PAY_PER_REQUEST
-      TableName: !Sub octagon-Teams-${pEnvironment}
       SSESpecification:
         SSEEnabled: True
         SSEType: KMS
-        KMSMasterKeyId: !GetAtt rKMSKey.Arn
+        KMSMasterKeyId: !GetAtt rKmsInfraKey.Arn
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: True
+
+  rDynamoPipelines:
+    Type: AWS::DynamoDB::Table
     UpdateReplacePolicy: Retain
     DeletionPolicy: Delete
-
-  rDynamoOctagonPipelines:
-    Type: AWS::DynamoDB::Table
     Metadata:
       cfn_nag:
         rules_to_suppress:
           - id: W28
             reason: DynamoDB tables require specific names to be compatible with Octagon
     Properties:
+      TableName: !Sub sdlf-Pipelines-${pEnvironment}
       KeySchema:
         - AttributeName: name
           KeyType: HASH
@@ -1216,24 +1039,24 @@ Resources:
         - AttributeName: name
           AttributeType: S
       BillingMode: PAY_PER_REQUEST
-      TableName: !Sub octagon-Pipelines-${pEnvironment}
       SSESpecification:
         SSEEnabled: True
         SSEType: KMS
-        KMSMasterKeyId: !GetAtt rKMSKey.Arn
+        KMSMasterKeyId: !GetAtt rKmsInfraKey.Arn
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: True
+
+  rDynamoEvents:
+    Type: AWS::DynamoDB::Table
     UpdateReplacePolicy: Retain
     DeletionPolicy: Delete
-
-  rDynamoOctagonEvents:
-    Type: AWS::DynamoDB::Table
     Metadata:
       cfn_nag:
         rules_to_suppress:
           - id: W28
             reason: DynamoDB tables require specific names to be compatible with Octagon
     Properties:
+      TableName: !Sub sdlf-Events-${pEnvironment}
       KeySchema:
         - AttributeName: id
           KeyType: HASH
@@ -1274,27 +1097,27 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
-      TableName: !Sub octagon-Events-${pEnvironment}
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
       SSESpecification:
         SSEEnabled: True
         SSEType: KMS
-        KMSMasterKeyId: !GetAtt rKMSKey.Arn
+        KMSMasterKeyId: !GetAtt rKmsInfraKey.Arn
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: True
+
+  rDynamoPipelineExecutionHistory:
+    Type: AWS::DynamoDB::Table
     UpdateReplacePolicy: Retain
     DeletionPolicy: Delete
-
-  rDynamoOctagonExecutionHistory:
-    Type: AWS::DynamoDB::Table
     Metadata:
       cfn_nag:
         rules_to_suppress:
           - id: W28
             reason: DynamoDB tables require specific names to be compatible with Octagon
     Properties:
+      TableName: !Sub sdlf-PipelineExecutionHistory-${pEnvironment}
       KeySchema:
         - AttributeName: id
           KeyType: HASH
@@ -1371,27 +1194,27 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
-      TableName: !Sub octagon-PipelineExecutionHistory-${pEnvironment}
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
       SSESpecification:
         SSEEnabled: True
         SSEType: KMS
-        KMSMasterKeyId: !GetAtt rKMSKey.Arn
+        KMSMasterKeyId: !GetAtt rKmsInfraKey.Arn
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: True
+
+  rDynamoDataSchemas: # structure of datasets (effectively Glue schemas)
+    Type: AWS::DynamoDB::Table
     UpdateReplacePolicy: Retain
     DeletionPolicy: Delete
-
-  rDynamoOctagonSchemas:
-    Type: AWS::DynamoDB::Table
     Metadata:
       cfn_nag:
         rules_to_suppress:
           - id: W28
             reason: DynamoDB tables require specific names to be compatible with Octagon
     Properties:
+      TableName: !Sub sdlf-DataSchemas-${pEnvironment}
       KeySchema:
         - AttributeName: name
           KeyType: HASH
@@ -1399,26 +1222,26 @@ Resources:
         - AttributeName: name
           AttributeType: S
       BillingMode: PAY_PER_REQUEST
-      TableName: !Sub octagon-DataSchemas-${pEnvironment}
       StreamSpecification:
         StreamViewType: NEW_AND_OLD_IMAGES
       SSESpecification:
         SSEEnabled: True
         SSEType: KMS
-        KMSMasterKeyId: !GetAtt rKMSKey.Arn
+        KMSMasterKeyId: !GetAtt rKmsInfraKey.Arn
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: True
+
+  rDynamoManifests: # for manifest file-based processing (file listing other files to process)
+    Type: AWS::DynamoDB::Table
     UpdateReplacePolicy: Retain
     DeletionPolicy: Delete
-
-  rDynamoOctagonManifests:
-    Type: AWS::DynamoDB::Table
     Metadata:
       cfn_nag:
         rules_to_suppress:
           - id: W28
             reason: DynamoDB tables require specific names to be compatible with Octagon
     Properties:
+      TableName: !Sub sdlf-Manifests-${pEnvironment}
       KeySchema:
         - AttributeName: dataset_name
           KeyType: HASH
@@ -1430,69 +1253,257 @@ Resources:
         - AttributeName: datafile_name
           AttributeType: S
       BillingMode: PAY_PER_REQUEST
-      TableName: !Sub octagon-Manifests-${pEnvironment}
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
       SSESpecification:
         SSEEnabled: True
         SSEType: KMS
-        KMSMasterKeyId: !GetAtt rKMSKey.Arn
+        KMSMasterKeyId: !GetAtt rKmsInfraKey.Arn
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: True
-    UpdateReplacePolicy: Retain
-    DeletionPolicy: Delete
 
   rDynamoObjectMetadataSsm:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /SDLF/Dynamo/ObjectCatalog
+      Name: !Sub /SDLF/Dynamo/ObjectCatalog
       Type: String
-      Value: !Ref rDynamoOctagonObjectMetadata
+      Value: !Ref rDynamoObjectMetadata
       Description: Name of the DynamoDB used to store metadata
-  rDynamoTransformMappingSsm:
+
+  rDynamoTransformMappingSsm: # kept for backward-compatibility, always the same as rDynamoDatasetsSsm
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /SDLF/Dynamo/TransformMapping
+      Name: !Sub /SDLF/Dynamo/TransformMapping
       Type: String
-      Value: !Ref rDynamoOctagonDatasets
-      Description: Name of the DynamoDB used to store mappings to transformation
+      Value: !Ref rDynamoDatasets
+      Description: Name of the DynamoDB used to store dataset details
+
+  rDynamoDatasetsSsm:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /SDLF/Dynamo/Datasets
+      Type: String
+      Value: !Ref rDynamoDatasets
+      Description: Name of the DynamoDB used to store dataset details
+
   rDynamoPipelinesSsm:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /SDLF/Dynamo/Pipelines
+      Name: !Sub /SDLF/Dynamo/Pipelines
       Type: String
-      Value: !Ref rDynamoOctagonPipelines
+      Value: !Ref rDynamoPipelines
       Description: Name of the DynamoDB used to store pipelines metadata
-  rDynamoTeamMetadataSsm:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /SDLF/Dynamo/TeamMetadata
-      Type: String
-      Value: !Ref rDynamoOctagonTeams
-      Description: Name of the DynamoDB used to store teams metadata
+
   rDynamoDataSchemasSsm:
     Type: AWS::SSM::Parameter
     Properties:
       Name: /SDLF/Dynamo/DataSchemas
       Type: String
-      Value: !Ref rDynamoOctagonSchemas
+      Value: !Ref rDynamoDataSchemas
       Description: Name of the DynamoDB used to store data schemas
+
   rDynamoManifestsSsm:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /SDLF/Dynamo/Manifests
+      Name: !Sub /SDLF/Dynamo/Manifests
       Type: String
-      Value: !Ref rDynamoOctagonManifests
+      Value: !Ref rDynamoManifests
       Description: Name of the DynamoDB used to store manifest process metadata
 
+  ######## Domain Object Catalog #########
+  # all objects going through the raw bucket is catalogued in DynamoDB
+  rRoleLambdaExecution:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !If
+          - RunInVpc
+          - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+          - !Ref "AWS::NoValue"
+      Policies:
+        - PolicyName: sdlf-catalog
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/sdlf-catalog*
+              - Effect: Allow
+                Action:
+                  - sqs:DeleteMessage
+                  - sqs:DeleteMessageBatch
+                  - sqs:GetQueueAttributes
+                  - sqs:GetQueueUrl
+                  - sqs:ListQueues
+                  - sqs:ListDeadLetterSourceQueues
+                  - sqs:ListQueueTags
+                  - sqs:ReceiveMessage
+                  - sqs:SendMessage
+                  - sqs:SendMessageBatch
+                Resource:
+                  - !GetAtt rQueueCatalog.Arn
+                  - !GetAtt rDeadLetterQueueCatalog.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:BatchGetItem
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                  - dynamodb:GetRecords
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/sdlf-*
+              - Effect: Allow
+                Action:
+                  - kms:CreateGrant
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                  - kms:Encrypt
+                  - kms:GenerateDataKey*
+                  - kms:ReEncrypt*
+                Resource: !GetAtt rKmsInfraKey.Arn
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/EventBridge/*
+
+  rQueueCatalog:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt rDeadLetterQueueCatalog.Arn
+        maxReceiveCount: 1
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 604800
+      KmsMasterKeyId: !GetAtt rKmsInfraKey.Arn
+
+  rDeadLetterQueueCatalog:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      MessageRetentionPeriod: 1209600
+      VisibilityTimeout: 60
+      KmsMasterKeyId: !GetAtt rKmsInfraKey.Arn
+
+  rQueueCatalogPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action:
+              - SQS:SendMessage
+            Resource: !GetAtt rQueueCatalog.Arn
+            Condition:
+              ArnEquals:
+                "aws:SourceArn":
+                  !If
+                    - UseCustomBucketPrefix
+                    - - !Sub "arn:${AWS::Partition}:s3:::${pCustomBucketPrefix}-raw"
+                      - !Sub "arn:${AWS::Partition}:s3:::${pCustomBucketPrefix}-stage"
+                      - !Sub "arn:${AWS::Partition}:s3:::${pCustomBucketPrefix}-analytics"
+                    - - !Sub "arn:${AWS::Partition}:s3:::${pOrg}-${pDomain}-${pEnvironment}-${AWS::Region}-${AWS::AccountId}-raw"
+                      - !Sub "arn:${AWS::Partition}:s3:::${pOrg}-${pDomain}-${pEnvironment}-${AWS::Region}-${AWS::AccountId}-stage"
+                      - !Sub "arn:${AWS::Partition}:s3:::${pOrg}-${pDomain}-${pEnvironment}-${AWS::Region}-${AWS::AccountId}-analytics"
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Queues:
+        - !Ref rQueueCatalog
+
+  rQueueLambdaCatalogEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 10
+      Enabled: True
+      EventSourceArn: !GetAtt rQueueCatalog.Arn
+      FunctionName: !GetAtt rLambdaCatalog.Arn
+
+  rLambdaCatalog:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./lambda/catalog/src
+      Environment:
+        Variables:
+          ENV: !Ref pEnvironment
+      Description: Catalogs S3 Put and Delete to ObjectMetaDataCatalog
+      MemorySize: 256
+      Timeout: 60
+      Role: !GetAtt rRoleLambdaExecution.Arn
+
+  rLambdaCatalogRedrive:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./lambda/catalog-redrive/src
+      FunctionName: !Sub sdlf-${pDomain}-catalog-redrive
+      Environment:
+        Variables:
+          QUEUE: !GetAtt rQueueCatalog.QueueName
+          DLQ: !GetAtt rDeadLetterQueueCatalog.QueueName
+      Description: Redrives Failed S3 Put/Delete to Catalog Lambda
+      MemorySize: 256
+      Timeout: 60
+      Role: !GetAtt rRoleLambdaExecution.Arn
+
+  rLambdaCatalogRedriveLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${rLambdaCatalogRedrive}
+      RetentionInDays: !Ref pCloudWatchLogsRetentionInDays
+      KmsKeyId: !GetAtt rKmsInfraKey.Arn
+
+  rS3ObjectTriggerRule:
+    Type: AWS::Events::Rule
+    Properties:
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - Object Created
+          - Object Deleted
+        detail:
+          bucket:
+            - !Ref rRawBucket
+            - !Ref rStageBucket
+            - !Ref rAnalyticsBucket
+      Targets:
+        - Arn: !GetAtt rQueueCatalog.Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 3
+            MaximumEventAgeInSeconds: 600
+          DeadLetterConfig:
+            Arn: !GetAtt rDeadLetterQueueCatalog.Arn
+          Id: sdlf-catalog
+
   ######## GLUE REPLICATION #########
-  ######## LAMBDA #########
   rLambdaReplicate:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: sdlf-glue-replication
-      Description: Replicates Glue Catalog Metadata and Data Quality to Octagon Schemas Table
+      Description: Replicates Glue Catalog Metadata and Data Quality to Octagon DataSchemas Table
       CodeUri: ./lambda/replicate/src
       Environment:
         Variables:
@@ -1508,7 +1519,7 @@ Resources:
     Properties:
       LogGroupName: !Sub /aws/lambda/${rLambdaReplicate}
       RetentionInDays: !Ref pCloudWatchLogsRetentionInDays
-      KmsKeyId: !GetAtt rKMSKey.Arn
+      KmsKeyId: !GetAtt rKmsInfraKey.Arn
 
   rEventsInvokeLambdaPermission:
     Type: AWS::Lambda::Permission
@@ -1518,7 +1529,6 @@ Resources:
       Principal: events.amazonaws.com
       SourceArn: !GetAtt rLambdaEventsRule.Arn
 
-  ######## EVENTS #########
   rLambdaEventsRule:
     Type: AWS::Events::Rule
     Properties:
@@ -1534,11 +1544,101 @@ Resources:
         - Arn: !GetAtt rLambdaReplicate.Arn
           Id: LambdaReplicate
 
+  ######## IAM role for Glue crawlers in this domain #########
+  rDatalakeCrawlerRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: The actions with "*" are all ones that only support the all resources wildcard
+    Properties:
+      Path: !Sub /sdlf-${pDomain}/
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - glue.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: !Sub sdlf-${pDomain}-glue-crawler
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                Resource: !Sub arn:${AWS::Partition}:s3:::aws-glue-*
+              - Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::aws-glue-*/*
+                  - !Sub arn:${AWS::Partition}:s3:::*/*aws-glue-*/*
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::crawler-public*
+                  - !Sub arn:${AWS::Partition}:s3:::aws-glue-*
+              - Effect: Allow
+                Action:
+                  - s3:ListObjectsV2
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+                  - s3:GetBucketAcl
+                  - s3:GetBucketLocation
+                  - s3:PutObject
+                  - s3:PutObjectVersion
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${rRawBucket}/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${rStageBucket}/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${rAnalyticsBucket}/*"
+              - Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncrypt*
+                  - kms:GenerateDataKey*
+                  - kms:CreateGrant
+                Resource:
+                  - !GetAtt rKmsInfraKey.Arn
+                  - !GetAtt rKmsDataKey.Arn
+              - Effect: Allow
+                Action:
+                  - lakeformation:GetDataAccess # W11 exception
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:AssociateKmsKey
+                Resource:
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws-glue/crawlers-role/sdlf-*
+
+  rDatalakeCrawlerRoleArnSsm:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /SDLF/IAM/CrawlerRoleArn
+      Type: String
+      Value: !GetAtt rDatalakeCrawlerRole.Arn
+      Description: The ARN of the Crawler role
+
   ######## SSM OUTPUTS #########
   rOrganizationSsm:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /SDLF/Misc/pOrg
+      Name: !Sub /SDLF/Misc/pOrg
       Type: String
       Value: !Ref pOrg
       Description: Name of the Organization owning the datalake
@@ -1550,6 +1650,7 @@ Resources:
       Type: String
       Value: !Ref pDomain
       Description: Data domain name
+
   rEnvironmentSsm:
     Type: AWS::SSM::Parameter
     Properties:
@@ -1557,27 +1658,15 @@ Resources:
       Type: String
       Value: !Ref pEnvironment
       Description: Environment name
+
   rCentralCatalogSsm:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /SDLF/Misc/CentralCatalog/AccountId
+      Name: !Sub /SDLF/Misc/CentralCatalog/AccountId
       Type: String
       Value: !Ref pCentralCatalog
       Description: Central Glue catalog account id
-  rDataLakeAdminRoleSsm:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /SDLF/IAM/DataLakeAdminRoleArn
-      Type: String
-      Value: !GetAtt rDataLakeAdminRole.Arn
-      Description: Lake Formation Data Lake Admin Role
-  rS3AccessLogsBucketSsm:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /SDLF/S3/AccessLogsBucket
-      Type: String
-      Value: !Ref rS3AccessLogsBucket
-      Description: S3 Access Logs Bucket
+
 Outputs:
   oPipelineReference:
     Description: CodePipeline reference this stack has been deployed with

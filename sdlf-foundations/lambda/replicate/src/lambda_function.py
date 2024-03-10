@@ -89,7 +89,7 @@ def delete_table_item(table_id):
 
 
 def lambda_handler(event, context):
-    """Replicates Glue catalog table to Octagon Schemas DynamoDB table
+    """Replicates Glue catalog table to Octagon DataSchemas DynamoDB table
 
     Arguments:
         event {dict} -- Dictionary of Glue Data Catalog Database State Change

@@ -149,11 +149,8 @@ Resources:
                   - ssm:PutParameter
                 Resource:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/IAM/${pTeamName}/TeamPermissionsBoundary
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/KMS/${pTeamName}/InfraKeyId
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/KMS/${pTeamName}/DataKeyId
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/SNS/${pTeamName}/Notifications
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/EventBridge/${pTeamName}/ScheduleGroupName
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/IAM/${pTeamName}/CrawlerRoleArn
               - Sid: ReadOnlyAccessSsm
                 Effect: Allow
                 Action:
@@ -167,6 +164,9 @@ Resources:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/Misc/*
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/S3/*
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/Lambda/LatestDatalakeLibraryLayer
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/KMS/InfraKeyArn
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/KMS/DataKeyArn
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/IAM/CrawlerRoleArn
               - Effect: Allow
                 Action:
                   - ssm:AddTagsToResource
@@ -204,7 +204,7 @@ Resources:
                 Condition:
                   "ForAnyValue:StringLike":
                     "kms:ResourceAliases":
-                      - !Sub alias/sdlf-${pTeamName}-kms-infra-key
+                      - !Sub alias/sdlf-${pDomain}-kms-infra-key
 
   rTeamCloudFormationPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -385,6 +385,7 @@ Resources:
               - iam:PassRole
             Resource:
               - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/sdlf-${pTeamName}/sdlf-*
+              - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/sdlf-${pDomain}/sdlf-*
             Condition:
               StringEquals:
                 "iam:PassedToService":
@@ -495,7 +496,6 @@ Resources:
               - ssm:GetParameters
               - ssm:GetParametersByPath
             Resource:
-              - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/KMS/KeyArn
               - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SDLF/VPC/*
           - Effect: Allow
             Action:

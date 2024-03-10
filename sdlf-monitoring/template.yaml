@@ -152,7 +152,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - BucketKeyEnabled: True
             ServerSideEncryptionByDefault:
-              KMSMasterKeyID: !Sub "{{resolve:ssm:/SDLF/KMS/KeyArn}}"
+              KMSMasterKeyID: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
               SSEAlgorithm: aws:kms
       PublicAccessBlockConfiguration:
         BlockPublicAcls: True
@@ -207,7 +207,7 @@ Resources:
     Properties:
       LogGroupName: /aws/cloudtrail/sdlf-trail
       RetentionInDays: !Ref pCloudWatchLogsRetentionInDays
-      KmsKeyId: "{{resolve:ssm:/SDLF/KMS/KeyArn}}"
+      KmsKeyId: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
 
   rTrailLogGroupRole:
     Type: AWS::IAM::Role
@@ -251,7 +251,7 @@ Resources:
             IncludeManagementEvents: true
             ReadWriteType: All
         - !Ref "AWS::NoValue"
-      KMSKeyId: "{{resolve:ssm:/SDLF/KMS/KeyArn}}"
+      KMSKeyId: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
       S3BucketName: !Ref rTrailBucket
       S3KeyPrefix: !Ref pLogFilePrefix
       EnableLogFileValidation: true
@@ -275,7 +275,7 @@ Resources:
             IncludeManagementEvents: true
             ReadWriteType: All
         - !Ref "AWS::NoValue"
-      KMSKeyId: "{{resolve:ssm:/SDLF/KMS/KeyArn}}"
+      KMSKeyId: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
       S3BucketName: !Ref pExternalTrailBucket
       S3KeyPrefix: !Ref pLogFilePrefix
       EnableLogFileValidation: true
@@ -326,7 +326,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - BucketKeyEnabled: True
             ServerSideEncryptionByDefault:
-              KMSMasterKeyID: !Sub "{{resolve:ssm:/SDLF/KMS/KeyArn}}"
+              KMSMasterKeyID: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
               SSEAlgorithm: aws:kms
       PublicAccessBlockConfiguration:
         BlockPublicAcls: True
@@ -373,7 +373,7 @@ Resources:
     Properties:
       LogGroupName: !Sub /aws/kinesisfirehose/sdlf-cwlogs-to-os
       RetentionInDays: !Ref pCloudWatchLogsRetentionInDays
-      KmsKeyId: "{{resolve:ssm:/SDLF/KMS/KeyArn}}"
+      KmsKeyId: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
 
   rCloudwatchLogsFirehoseLogStream:
     Type: AWS::Logs::LogStream
@@ -417,7 +417,7 @@ Resources:
           Action:
             - kms:GenerateDataKey
             - kms:Decrypt
-          Resource: "{{resolve:ssm:/SDLF/KMS/KeyArn}}"
+          Resource: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
           Condition:
             StringEquals:
               "kms:ViaService": !Sub "s3.${AWS::Region}.amazonaws.com"
@@ -499,7 +499,7 @@ Resources:
     Properties:
       DeliveryStreamEncryptionConfigurationInput:
         KeyType: CUSTOMER_MANAGED_CMK
-        KeyARN: "{{resolve:ssm:/SDLF/KMS/KeyArn}}"
+        KeyARN: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
       DeliveryStreamName: sdlf-cwlogs-to-os
       DeliveryStreamType: DirectPut
       AmazonopensearchserviceDestinationConfiguration:
@@ -516,7 +516,7 @@ Resources:
           BucketARN: !GetAtt rCloudwatchLogsFirehoseBucket.Arn
           EncryptionConfiguration:
             KMSEncryptionConfig:
-              AWSKMSKeyARN: "{{resolve:ssm:/SDLF/KMS/KeyArn}}"
+              AWSKMSKeyARN: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
           CloudWatchLoggingOptions:
             Enabled: true
             LogGroupName: !Ref rCloudwatchLogsFirehoseLogGroup
@@ -532,7 +532,7 @@ Resources:
         - cTeamLevel
         - !Sub "sdlf-${pTeamName}-notifications"
         - !Sub "sdlf-${pTeamName}-${pDataset}-notifications"
-      KmsMasterKeyId: !Sub "{{resolve:ssm:/SDLF/KMS/${pTeamName}/InfraKeyId}}"
+      KmsMasterKeyId: "{{resolve:ssm:/SDLF/KMS/InfraKeyArn}}"
 
   rSnsTopicPolicy:
     Type: AWS::SNS::TopicPolicy
