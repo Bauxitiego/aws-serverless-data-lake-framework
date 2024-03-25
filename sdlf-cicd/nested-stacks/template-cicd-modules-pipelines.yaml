@@ -26,6 +26,11 @@ Parameters:
     Description: Environment name
     Type: String
     AllowedValues: [dev, test, prod]
+  pGitPlatform:
+    Description: Platform used to host git repositories
+    Type: String
+    AllowedValues: [CodeCommit, GitLab, prod]
+    Default: GitLab
 
 Mappings:
   pCodeCommitBranch:
@@ -35,6 +40,9 @@ Mappings:
       branch: test
     prod:
       branch: main
+
+Conditions:
+  GitLabNoCodeCommit: !Equals [!Ref pGitPlatform, "GitLab"]
 
 Resources:
   rMainRepositoryCodePipelineRole:
@@ -66,6 +74,14 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:codecommit:${AWS::Region}:${AWS::AccountId}:${pMainRepository}
                   - !Sub arn:${AWS::Partition}:codecommit:${AWS::Region}:${AWS::AccountId}:${pCicdRepository}
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource:
+                  - "{{resolve:ssm:/SDLF/GitLab/CodeStarConnection}}"
+                Condition:
+                  "ForAllValues:StringLike":
+                    "codestar-connections:FullRepositoryId": "sdlf/sdlf-*"
               - Effect: Allow
                 Action:
                   - s3:Get*
@@ -103,6 +119,7 @@ Resources:
   rMainRepositoryPipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
+      PipelineType: V2 #TODO
       RoleArn: !GetAtt rMainRepositoryCodePipelineRole.Arn
       Stages:
         -
@@ -135,6 +152,125 @@ Resources:
                 RepositoryName: !Ref pCicdRepository
                 BranchName: !FindInMap [pCodeCommitBranch, !Ref pEnvironment, branch]
                 PollForSourceChanges: false
+              RunOrder: 1
+        -
+          Name: DomainPipeline
+          Actions:
+            - Name: CreateDomainCodePipeline
+              ActionTypeId:
+                Category: Invoke
+                Owner: AWS
+                Provider: Lambda
+                Version: "1"
+              InputArtifacts:
+                - Name: SourceMainArtifact
+                - Name: SourceCicdArtifact
+              Configuration:
+                FunctionName: !Ref pMainRepositoryDomainLambda
+                UserParameters: !FindInMap [pCodeCommitBranch, !Ref pEnvironment, branch]
+              RunOrder: 1
+        -
+          Name: CrossAccountTeamPipelineRole
+          Actions:
+            - Name: CreateTeamCrossAccountRole
+              ActionTypeId:
+                Category: Invoke
+                Owner: AWS
+                Provider: Lambda
+                Version: "1"
+              InputArtifacts:
+                - Name: SourceMainArtifact
+                - Name: SourceCicdArtifact
+              Configuration:
+                FunctionName: !Ref pMainRepositoryCrossAccountTeamLambda
+                UserParameters: !FindInMap [pCodeCommitBranch, !Ref pEnvironment, branch]
+              RunOrder: 1
+        -
+          Name: TeamPipeline
+          Actions:
+            - Name: PackageTemplate
+              InputArtifacts:
+                - Name: SourceCicdArtifact
+              OutputArtifacts:
+                - Name: TemplatePackage
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: "1"
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref pBuildCloudFormationPackage
+                EnvironmentVariables: >-
+                  [{"name":"TEMPLATE", "value":"template-cicd-team-repository.yaml", "type":"PLAINTEXT"}]
+              RunOrder: 1
+            - Name: CreateTeamCodePipeline
+              ActionTypeId:
+                Category: Invoke
+                Owner: AWS
+                Provider: Lambda
+                Version: "1"
+              InputArtifacts:
+                - Name: SourceMainArtifact
+                - Name: SourceCicdArtifact
+                - Name: TemplatePackage
+              Configuration:
+                FunctionName: !Ref pMainRepositoryTeamLambda
+                UserParameters: !FindInMap [pCodeCommitBranch, !Ref pEnvironment, branch]
+              RunOrder: 2
+      ArtifactStore:
+        Type: S3
+        EncryptionKey:
+          Id: !Ref pKMSKey
+          Type: KMS
+        Location: !Ref pArtifactsBucket
+
+  rMainRepositoryPipelineGitlab:
+    Type: AWS::CodePipeline::Pipeline
+    Condition: GitLabNoCodeCommit
+    Properties:
+      RoleArn: !GetAtt rMainRepositoryCodePipelineRole.Arn
+      PipelineType: V2 # TODO might not be needed if no filter specified
+      Triggers:
+        - ProviderType: CodeStarSourceConnection
+          GitConfiguration:
+            Push:
+              - Branches:
+                  Includes:
+                    - !FindInMap [pCodeCommitBranch, !Ref pEnvironment, branch]
+            SourceActionName: SourceMain # TODO what is this for
+      Stages:
+        -
+          Name: Sources
+          Actions:
+            -
+              Name: SourceMain
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: "1"
+                Provider: CodeStarSourceConnection
+              OutputArtifacts:
+                - Name: SourceMainArtifact
+              Configuration:
+                ConnectionArn: "{{resolve:ssm:/SDLF/GitLab/CodeStarConnection}}"
+                FullRepositoryId: !Sub sdlf/${pMainRepository}
+                BranchName: !FindInMap [pCodeCommitBranch, !Ref pEnvironment, branch]
+                OutputArtifactFormat: CODE_ZIP
+              RunOrder: 1
+            -
+              Name: SourceCicd
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: "1"
+                Provider: CodeStarSourceConnection
+              OutputArtifacts:
+                - Name: SourceCicdArtifact
+              Configuration:
+                ConnectionArn: "{{resolve:ssm:/SDLF/GitLab/CodeStarConnection}}"
+                FullRepositoryId: !Sub sdlf/${pCicdRepository}
+                BranchName: !FindInMap [pCodeCommitBranch, !Ref pEnvironment, branch]
+                OutputArtifactFormat: CODE_ZIP
               RunOrder: 1
         -
           Name: DomainPipeline
